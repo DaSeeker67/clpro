@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cluely Pro</title>
+  <link rel="stylesheet" href="style.css">
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+  <script src="../node_modules/marked/lib/marked.umd.js"></script>
+</head>
+<body>
+  <!-- Drag handle -->
+  <div id="drag-bar">
+    <div class="drag-dots">⋮⋮</div>
+    <div class="status-indicator">
+      <span id="status-dot" class="dot listening"></span>
+      <span id="status-text">Listening</span>
+    </div>
+    <div class="controls">
+      <button id="btn-toggle" title="Toggle Listening (Ctrl+Shift+L)">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+          <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+          <line x1="12" y1="19" x2="12" y2="23"/>
+          <line x1="8" y1="23" x2="16" y2="23"/>
+        </svg>
+      </button>
+      <button id="btn-force" title="Force Answer (Ctrl+Shift+A)">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/>
+        </svg>
+      </button>
+      <button id="btn-screenshot" title="Screenshot + Answer (Ctrl+G)">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/>
+          <circle cx="12" cy="13" r="4"/>
+        </svg>
+      </button>
+      <button id="btn-settings" title="Settings">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+      </button>
+      <button id="btn-close" title="Close (Ctrl+Shift+P to reopen)">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <line x1="18" y1="6" x2="6" y2="18"/>
+          <line x1="6" y1="6" x2="18" y2="18"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- Settings screen -->
+  <div id="settings-screen" style="display:none">
+    <div class="settings-header">
+      <span class="section-label">SETTINGS</span>
+      <button id="btn-settings-close" class="settings-close-btn">&times;</button>
+    </div>
+    <div class="settings-body">
+      <label class="settings-label" for="license-key-input">License Key</label>
+      <div class="settings-input-row">
+        <input type="password" id="license-key-input" placeholder="CLP-XXXXX-XXXXX-XXXXX" autocomplete="off" spellcheck="false">
+        <button id="btn-toggle-license-vis" class="key-vis-btn" title="Show/Hide">👁</button>
+      </div>
+      <div id="license-plan-badge" class="plan-badge" style="display:none"></div>
+      <p class="settings-hint">Get a key at <span class="settings-link" id="license-link">cluelypro.com</span></p>
+      <button id="btn-save-license" class="settings-save-btn">Activate License</button>
+      <div id="license-status" class="key-status"></div>
+
+      <div class="settings-divider"></div>
+
+      <label class="settings-label" for="api-key-input">Groq API Key</label>
+      <div class="settings-input-row">
+        <input type="password" id="api-key-input" placeholder="gsk_..." autocomplete="off" spellcheck="false">
+        <button id="btn-toggle-key-vis" class="key-vis-btn" title="Show/Hide">👁</button>
+      </div>
+      <p class="settings-hint">Get a free key at <span class="settings-link" id="groq-link">console.groq.com</span></p>
+      <button id="btn-save-key" class="settings-save-btn">Save & Connect</button>
+      <div id="key-status" class="key-status"></div>
+
+      <div class="settings-divider"></div>
+
+      <label class="settings-label" for="user-context-input">About You <span class="char-count" id="char-count">0/1000</span></label>
+      <textarea id="user-context-input" placeholder="Paste your resume, bio, or custom instructions... The AI will use this to personalize answers." maxlength="1000" spellcheck="false"></textarea>
+      <button id="btn-save-context" class="settings-save-btn">Save Context</button>
+      <div id="context-status" class="key-status"></div>
+    </div>
+  </div>
+
+  <!-- Main content -->
+  <div id="content">
+    <!-- Transcript (hidden) -->
+    <div id="transcript-section" style="display:none">
+      <div id="transcript-label" class="section-label">TRANSCRIPT</div>
+      <div id="transcript" class="scroll-area">
+        <span class="placeholder">Waiting for audio...</span>
+      </div>
+    </div>
+
+    <!-- Answer (prominent) -->
+    <div id="answer-section">
+      <div id="answer-label" class="section-label">
+        <span>ANSWER</span>
+        <span id="answer-latency" class="latency"></span>
+      </div>
+      <div id="answer" class="scroll-area">
+        <span class="placeholder">Ctrl+G to screenshot & answer</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Chat input -->
+  <div id="chat-bar">
+    <input type="text" id="chat-input" placeholder="Ask anything... (Enter to send)" autocomplete="off" spellcheck="false">
+    <button id="btn-send" title="Send">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+        <line x1="22" y1="2" x2="11" y2="13"/>
+        <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+      </svg>
+    </button>
+  </div>
+
+  <!-- Resize handle -->
+  <div id="resize-handle"></div>
+
+  <script>
+    console.log("Marked typeof: " + typeof marked);
+
+    // ─── State ──────────────────────────────
+    let isListening = true;
+    let transcriptText = "";
+    let currentAnswer = "";
+    let isStreaming = false;
+
+    // ─── DOM refs ───────────────────────────
+    const statusDot = document.getElementById("status-dot");
+    const statusTextEl = document.getElementById("status-text");
+    const transcriptEl = document.getElementById("transcript");
+    const answerEl = document.getElementById("answer");
+    const answerLatency = document.getElementById("answer-latency");
+    const btnToggle = document.getElementById("btn-toggle");
+    const btnForce = document.getElementById("btn-force");
+    const btnScreenshot = document.getElementById("btn-screenshot");
+    const btnSettings = document.getElementById("btn-settings");
+    const btnClose = document.getElementById("btn-close");
+    const chatInput = document.getElementById("chat-input");
+    const btnSend = document.getElementById("btn-send");
+    const settingsScreen = document.getElementById("settings-screen");
+    const contentEl = document.getElementById("content");
+    const chatBar = document.getElementById("chat-bar");
+    const apiKeyInput = document.getElementById("api-key-input");
+    const btnSaveKey = document.getElementById("btn-save-key");
+    const btnSettingsClose = document.getElementById("btn-settings-close");
+    const btnToggleKeyVis = document.getElementById("btn-toggle-key-vis");
+    const keyStatus = document.getElementById("key-status");
+    const groqLink = document.getElementById("groq-link");
+    const userContextInput = document.getElementById("user-context-input");
+    const btnSaveContext = document.getElementById("btn-save-context");
+    const contextStatus = document.getElementById("context-status");
+    const charCount = document.getElementById("char-count");
+    const licenseKeyInput = document.getElementById("license-key-input");
+    const btnSaveLicense = document.getElementById("btn-save-license");
+    const btnToggleLicenseVis = document.getElementById("btn-toggle-license-vis");
+    const licenseStatus = document.getElementById("license-status");
+    const licensePlanBadge = document.getElementById("license-plan-badge");
+    const licenseLink = document.getElementById("license-link");
+
+    // ─── Message handler ────────────────────
+    window.copilot.onMessage((msg) => {
+      switch (msg.type) {
+        case "transcript":
+          addTranscript(msg.text);
+          break;
+
+        case "question":
+          highlightQuestion(msg.text);
+          break;
+
+        case "answer_start":
+          startAnswer();
+          break;
+
+        case "answer_chunk":
+          appendAnswer(msg.text);
+          break;
+
+        case "answer_done":
+          finishAnswer(msg.latency_ms);
+          break;
+
+        case "answer_error":
+          showError(msg.text);
+          break;
+
+        case "listening":
+          updateListeningState(msg.state === "ON");
+          break;
+
+        case "status":
+          showStatus(msg.text);
+          break;
+
+        case "screenshot_start":
+          startAnswer();
+          showStatus("Analyzing screenshot...");
+          break;
+      }
+    });
+
+    // ─── Transcript ─────────────────────────
+    function addTranscript(text) {
+      if (transcriptEl.querySelector(".placeholder")) {
+        transcriptEl.innerHTML = "";
+      }
+      const span = document.createElement("span");
+      span.className = "transcript-chunk new";
+      span.textContent = text + " ";
+      transcriptEl.appendChild(span);
+
+      // Remove 'new' class after animation
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          span.classList.remove("new");
+        });
+      });
+
+      // Auto-scroll
+      transcriptEl.scrollTop = transcriptEl.scrollHeight;
+
+      // Limit visible chunks (keep last 50)
+      while (transcriptEl.children.length > 50) {
+        transcriptEl.removeChild(transcriptEl.firstChild);
+      }
+    }
+
+    function highlightQuestion(text) {
+      // Add a highlighted question marker in the transcript
+      const marker = document.createElement("span");
+      marker.className = "question-marker";
+      marker.textContent = "❓ ";
+      transcriptEl.appendChild(marker);
+      transcriptEl.scrollTop = transcriptEl.scrollHeight;
+    }
+
+    // ─── Answer ─────────────────────────────
+    function startAnswer() {
+      isStreaming = true;
+      currentAnswer = "";
+      answerEl.innerHTML = "";
+      answerEl.classList.add("streaming");
+      answerLatency.textContent = "";
+
+      // Add cursor
+      const cursor = document.createElement("span");
+      cursor.className = "cursor";
+      cursor.id = "streaming-cursor";
+      answerEl.appendChild(cursor);
+    }
+
+    function addCopyButtons() {
+      answerEl.querySelectorAll("pre").forEach((pre) => {
+        if (pre.querySelector(".copy-code-btn")) return;
+        const btn = document.createElement("button");
+        btn.className = "copy-code-btn";
+        btn.textContent = "Copy";
+        btn.addEventListener("click", (e) => {
+          e.stopPropagation();
+          const code = pre.querySelector("code");
+          const text = (code || pre).textContent;
+          window.copilot.copyToClipboard(text);
+          btn.textContent = "Copied!";
+          btn.classList.add("copied");
+          setTimeout(() => {
+            btn.textContent = "Copy";
+            btn.classList.remove("copied");
+          }, 2000);
+        });
+        pre.insertBefore(btn, pre.firstChild);
+      });
+    }
+
+    function appendAnswer(text) {
+      currentAnswer += text;
+      
+      // Parse markdown to HTML
+      const html = marked.parse(currentAnswer);
+      answerEl.innerHTML = html;
+
+      // Add copy buttons to code blocks
+      addCopyButtons();
+
+      // Re-add cursor
+      if (isStreaming) {
+        const cursor = document.createElement("span");
+        cursor.className = "cursor";
+        cursor.id = "streaming-cursor";
+        answerEl.appendChild(cursor);
+      }
+
+      answerEl.scrollTop = answerEl.scrollHeight;
+    }
+
+    function finishAnswer(latencyMs) {
+      isStreaming = false;
+      answerEl.classList.remove("streaming");
+
+      const cursor = document.getElementById("streaming-cursor");
+      if (cursor) cursor.remove();
+
+      // Final pass for copy buttons
+      addCopyButtons();
+
+      if (latencyMs) {
+        answerLatency.textContent = `${Math.round(latencyMs)}ms`;
+      }
+
+      // Pulse effect
+      answerEl.classList.add("flash");
+      setTimeout(() => answerEl.classList.remove("flash"), 600);
+    }
+
+    function showError(text) {
+      isStreaming = false;
+      answerEl.classList.remove("streaming");
+      answerEl.innerHTML = `<span class="error">${text}</span>`;
+    }
+
+    // ─── Status ─────────────────────────────
+    function updateListeningState(listening) {
+      isListening = listening;
+      statusDot.className = `dot ${listening ? "listening" : "paused"}`;
+      statusTextEl.textContent = listening ? "Listening" : "Paused";
+    }
+
+    function showStatus(text) {
+      statusTextEl.textContent = text;
+      setTimeout(() => {
+        statusTextEl.textContent = isListening ? "Listening" : "Paused";
+      }, 3000);
+    }
+
+    // ─── Button handlers ────────────────────
+    btnToggle.addEventListener("click", () => {
+      window.copilot.sendCommand("toggle");
+    });
+
+    btnForce.addEventListener("click", () => {
+      window.copilot.sendCommand("force_answer");
+    });
+
+    btnScreenshot.addEventListener("click", () => {
+      window.copilot.sendCommand("screenshot");
+    });
+
+    btnClose.addEventListener("click", () => {
+      window.copilot.closeWindow();
+    });
+
+    // License key handlers
+    btnToggleLicenseVis.addEventListener("click", () => {
+      licenseKeyInput.type = licenseKeyInput.type === "password" ? "text" : "password";
+    });
+
+    licenseLink.addEventListener("click", () => {
+      window.copilot.openExternal("https://cluelypro.com");
+    });
+
+    licenseKeyInput.addEventListener("focus", () => {
+      window.copilot.setFocusable(true);
+    });
+    licenseKeyInput.addEventListener("blur", () => {
+      window.copilot.setFocusable(false);
+    });
+    licenseKeyInput.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Enter") btnSaveLicense.click();
+    });
+
+    btnSaveLicense.addEventListener("click", async () => {
+      const key = licenseKeyInput.value.trim().toUpperCase();
+      if (!key) {
+        licenseStatus.textContent = "Please enter a license key";
+        licenseStatus.className = "key-status error";
+        return;
+      }
+      licenseStatus.textContent = "Validating...";
+      licenseStatus.className = "key-status";
+      try {
+        const result = await window.copilot.saveLicenseKey(key);
+        if (result.valid) {
+          licenseStatus.textContent = `Activated! Plan: ${result.plan.toUpperCase()}`;
+          licenseStatus.className = "key-status success";
+          updatePlanBadge(result.plan);
+        } else {
+          licenseStatus.textContent = "Invalid license key";
+          licenseStatus.className = "key-status error";
+        }
+      } catch (e) {
+        licenseStatus.textContent = "Validation failed";
+        licenseStatus.className = "key-status error";
+      }
+    });
+
+    function updatePlanBadge(plan) {
+      if (!plan) {
+        licensePlanBadge.style.display = "none";
+        return;
+      }
+      const labels = { free: "FREE", pro: "PRO", promax: "PRO MAX" };
+      licensePlanBadge.textContent = labels[plan] || plan.toUpperCase();
+      licensePlanBadge.style.display = "inline-block";
+      licensePlanBadge.className = "plan-badge " + plan;
+    }
+
+    // ─── Settings ───────────────────────────
+    function showSettings() {
+      settingsScreen.style.display = "flex";
+      contentEl.style.display = "none";
+      chatBar.style.display = "none";
+      // Load saved license key
+      window.copilot.getLicenseKey().then(key => {
+        if (key) licenseKeyInput.value = key;
+      });
+      window.copilot.getLicenseStatus().then(status => {
+        if (status && status.plan) updatePlanBadge(status.plan);
+      });
+      // Load saved api key
+      window.copilot.getApiKey().then(key => {
+        if (key) apiKeyInput.value = key;
+      });
+      // Load saved context
+      window.copilot.getUserContext().then(ctx => {
+        if (ctx) userContextInput.value = ctx;
+        charCount.textContent = (userContextInput.value.length) + "/1000";
+      });
+    }
+
+    function hideSettings() {
+      settingsScreen.style.display = "none";
+      contentEl.style.display = "flex";
+      chatBar.style.display = "flex";
+    }
+
+    btnSettings.addEventListener("click", showSettings);
+    btnSettingsClose.addEventListener("click", hideSettings);
+
+    btnToggleKeyVis.addEventListener("click", () => {
+      apiKeyInput.type = apiKeyInput.type === "password" ? "text" : "password";
+    });
+
+    groqLink.addEventListener("click", () => {
+      window.copilot.openExternal("https://console.groq.com/keys");
+    });
+
+    btnSaveKey.addEventListener("click", async () => {
+      const key = apiKeyInput.value.trim();
+      if (!key) {
+        keyStatus.textContent = "Please enter a key";
+        keyStatus.className = "key-status error";
+        return;
+      }
+      keyStatus.textContent = "Saving...";
+      keyStatus.className = "key-status";
+      try {
+        await window.copilot.saveApiKey(key);
+        keyStatus.textContent = "Saved! Restarting backend...";
+        keyStatus.className = "key-status success";
+        setTimeout(hideSettings, 1500);
+      } catch (e) {
+        keyStatus.textContent = "Failed to save";
+        keyStatus.className = "key-status error";
+      }
+    });
+
+    apiKeyInput.addEventListener("focus", () => {
+      window.copilot.setFocusable(true);
+    });
+    apiKeyInput.addEventListener("blur", () => {
+      window.copilot.setFocusable(false);
+    });
+    apiKeyInput.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+      if (e.key === "Enter") btnSaveKey.click();
+    });
+
+    // User context
+    userContextInput.addEventListener("input", () => {
+      charCount.textContent = userContextInput.value.length + "/1000";
+    });
+    userContextInput.addEventListener("focus", () => {
+      window.copilot.setFocusable(true);
+    });
+    userContextInput.addEventListener("blur", () => {
+      window.copilot.setFocusable(false);
+    });
+    userContextInput.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+    });
+
+    btnSaveContext.addEventListener("click", async () => {
+      const ctx = userContextInput.value.trim().substring(0, 1000);
+      contextStatus.textContent = "Saving...";
+      contextStatus.className = "key-status";
+      try {
+        await window.copilot.saveUserContext(ctx);
+        contextStatus.textContent = "Saved!";
+        contextStatus.className = "key-status success";
+        setTimeout(() => { contextStatus.textContent = ""; }, 2000);
+      } catch (e) {
+        contextStatus.textContent = "Failed to save";
+        contextStatus.className = "key-status error";
+      }
+    });
+
+    // On load, check if license key and api key exist — if not, show settings
+    Promise.all([
+      window.copilot.getLicenseKey(),
+      window.copilot.getApiKey()
+    ]).then(([licenseKey, apiKey]) => {
+      if (!licenseKey || !apiKey) showSettings();
+    });
+
+    // Chat input
+    function sendChat() {
+      const text = chatInput.value.trim();
+      if (!text) return;
+      chatInput.value = "";
+      window.copilot.sendCommand("chat", { prompt: text });
+      startAnswer();
+    }
+
+    chatInput.addEventListener("keydown", (e) => {
+      e.stopPropagation(); // prevent hotkey conflicts
+      if (e.key === "Enter") {
+        sendChat();
+      }
+    });
+
+    btnSend.addEventListener("click", sendChat);
+
+    // Make chat input focusable (override non-focusable window)
+    chatInput.addEventListener("focus", () => {
+      window.copilot.setFocusable(true);
+    });
+    chatInput.addEventListener("blur", () => {
+      window.copilot.setFocusable(false);
+    });
+  </script>
+</body>
+</html>

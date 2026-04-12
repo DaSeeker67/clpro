@@ -1,0 +1,196 @@
+"""
+chunker.py -- VAD-based audio chunking.
+
+Consumes raw PCM frames from the audio capture queue, runs WebRTC VAD
+to detect speech, and produces audio chunks split on silence boundaries.
+Each chunk is saved as a temporary .wav file for the transcriber.
+"""
+
+import os
+import sys
+import struct
+import tempfile
+import time
+import queue
+from collections import deque
+
+import numpy as np
+import soundfile as sf
+
+try:
+    import webrtcvad
+except ImportError:
+    webrtcvad = None
+    print("[chunker] WARNING: webrtcvad not installed, using energy-based VAD fallback", file=sys.stderr)
+
+SAMPLE_RATE = 16000
+FRAME_DURATION_MS = 30
+FRAME_SIZE = int(SAMPLE_RATE * FRAME_DURATION_MS / 1000)  # 480 samples
+
+# Chunking parameters
+VAD_AGGRESSIVENESS = 2        # 0-3, higher = more aggressive filtering
+SILENCE_THRESHOLD_MS = 500    # ms of silence to trigger chunk flush
+MIN_CHUNK_DURATION_S = 1.0    # minimum chunk length (seconds)
+MAX_CHUNK_DURATION_S = 15.0   # maximum chunk length before forced flush
+PRE_SPEECH_BUFFER_MS = 300    # ms of audio to keep before speech starts
+
+
+class EnergyVAD:
+    """Fallback VAD using simple energy thresholding."""
+
+    def __init__(self, threshold=500):
+        self.threshold = threshold
+
+    def is_speech(self, frame_bytes, sample_rate):
+        samples = np.frombuffer(frame_bytes, dtype=np.int16)
+        energy = np.sqrt(np.mean(samples.astype(np.float64) ** 2))
+        return energy > self.threshold
+
+
+class AudioChunker:
+    """
+    Reads audio frames from a queue, applies VAD, and produces
+    speech chunks as temporary .wav files.
+    """
+
+    def __init__(self, audio_queue: queue.Queue, chunk_queue: queue.Queue):
+        """
+        Args:
+            audio_queue: Input queue of raw PCM bytes (30ms frames of int16).
+            chunk_queue: Output queue of file paths to .wav chunks.
+        """
+        self.audio_queue = audio_queue
+        self.chunk_queue = chunk_queue
+        self._running = False
+
+        # Initialize VAD
+        if webrtcvad is not None:
+            self.vad = webrtcvad.Vad(VAD_AGGRESSIVENESS)
+            self._is_speech = self._webrtc_is_speech
+        else:
+            self.vad = EnergyVAD()
+            self._is_speech = self._energy_is_speech
+
+        # State
+        self._speech_buffer = []       # frames of current speech segment
+        self._pre_buffer = deque(maxlen=int(PRE_SPEECH_BUFFER_MS / FRAME_DURATION_MS))
+        self._silence_frames = 0
+        self._in_speech = False
+        self._chunk_count = 0
+
+        # Temp directory for chunks
+        self._tmp_dir = tempfile.mkdtemp(prefix="cluely_chunks_")
+        print(f"[chunker] Temp dir: {self._tmp_dir}", file=sys.stderr)
+
+    def _webrtc_is_speech(self, frame_bytes):
+        """Check if frame contains speech using WebRTC VAD."""
+        # WebRTC VAD expects exactly 480 bytes for 30ms at 16kHz (mono int16)
+        expected = FRAME_SIZE * 2  # 2 bytes per int16 sample
+        if len(frame_bytes) != expected:
+            # Pad or truncate
+            if len(frame_bytes) < expected:
+                frame_bytes = frame_bytes + b"\x00" * (expected - len(frame_bytes))
+            else:
+                frame_bytes = frame_bytes[:expected]
+        try:
+            return self.vad.is_speech(frame_bytes, SAMPLE_RATE)
+        except Exception:
+            return False
+
+    def _energy_is_speech(self, frame_bytes):
+        """Fallback: energy-based VAD."""
+        return self.vad.is_speech(frame_bytes, SAMPLE_RATE)
+
+    def _flush_chunk(self):
+        """Save buffered speech frames as a .wav file and enqueue it."""
+        if not self._speech_buffer:
+            return
+
+        # Calculate duration
+        total_frames = len(self._speech_buffer)
+        duration_s = (total_frames * FRAME_SIZE) / SAMPLE_RATE
+
+        if duration_s < MIN_CHUNK_DURATION_S:
+            self._speech_buffer.clear()
+            return
+
+        # Concatenate all frames
+        all_bytes = b"".join(self._speech_buffer)
+        audio = np.frombuffer(all_bytes, dtype=np.int16)
+
+        # Save to temp file
+        self._chunk_count += 1
+        chunk_path = os.path.join(
+            self._tmp_dir, f"chunk_{self._chunk_count:04d}.wav"
+        )
+        sf.write(chunk_path, audio, SAMPLE_RATE, subtype="PCM_16")
+
+        print(f"[chunker] Chunk #{self._chunk_count}: {duration_s:.1f}s -> {chunk_path}", file=sys.stderr)
+        self.chunk_queue.put(chunk_path)
+
+        self._speech_buffer.clear()
+
+    def process_frame(self, frame_bytes):
+        """Process a single audio frame through the VAD pipeline."""
+        is_speech = self._is_speech(frame_bytes)
+
+        if is_speech:
+            if not self._in_speech:
+                # Speech just started — include pre-buffer
+                self._in_speech = True
+                self._silence_frames = 0
+                self._speech_buffer.extend(list(self._pre_buffer))
+                print("[chunker] Speech detected", file=sys.stderr)
+            self._speech_buffer.append(frame_bytes)
+            self._silence_frames = 0
+
+            # Check max duration
+            total_frames = len(self._speech_buffer)
+            duration_s = (total_frames * FRAME_SIZE) / SAMPLE_RATE
+            if duration_s >= MAX_CHUNK_DURATION_S:
+                print(f"[chunker] Max duration reached ({MAX_CHUNK_DURATION_S}s), flushing", file=sys.stderr)
+                self._flush_chunk()
+                self._in_speech = False
+        else:
+            if self._in_speech:
+                self._speech_buffer.append(frame_bytes)
+                self._silence_frames += 1
+                silence_ms = self._silence_frames * FRAME_DURATION_MS
+                if silence_ms >= SILENCE_THRESHOLD_MS:
+                    # Enough silence — flush the chunk
+                    self._in_speech = False
+                    self._flush_chunk()
+            else:
+                # Not in speech — keep pre-buffer rolling
+                self._pre_buffer.append(frame_bytes)
+
+    def run(self):
+        """Main loop: read frames from queue and process them."""
+        self._running = True
+        print("[chunker] Started", file=sys.stderr)
+
+        while self._running:
+            try:
+                frame_bytes = self.audio_queue.get(timeout=0.1)
+                self.process_frame(frame_bytes)
+            except queue.Empty:
+                continue
+            except Exception as e:
+                print(f"[chunker] Error: {e}", file=sys.stderr)
+                continue
+
+        # Flush any remaining audio
+        if self._speech_buffer:
+            self._flush_chunk()
+        print("[chunker] Stopped", file=sys.stderr)
+
+    def stop(self):
+        """Signal the chunker to stop."""
+        self._running = False
+
+    def cleanup(self):
+        """Remove temp directory and all chunk files."""
+        import shutil
+        if os.path.exists(self._tmp_dir):
+            shutil.rmtree(self._tmp_dir)
+            print(f"[chunker] Cleaned up {self._tmp_dir}", file=sys.stderr)

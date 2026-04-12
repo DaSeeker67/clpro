@@ -1,0 +1,65 @@
+{
+  "name": "cluely-pro",
+  "version": "1.0.0",
+  "description": "Stealth meeting copilot — local, screen-capture-proof AI assistant",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "dev": "electron . --dev",
+    "build:python": "cd backend && pyinstaller --noconfirm --clean --distpath ../python-dist --name cluely-backend main.py --hidden-import=dotenv --hidden-import=pynput --hidden-import=pynput.keyboard --hidden-import=pynput.keyboard._win32 --hidden-import=pynput.mouse --hidden-import=pynput.mouse._win32 --collect-all sounddevice --collect-all soundfile",
+    "build:electron": "electron-builder --win",
+    "build": "npm run build:python && npm run build:electron"
+  },
+  "build": {
+    "appId": "com.cluely.pro",
+    "productName": "Cluely Pro",
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": ["x64"]
+        },
+        {
+          "target": "portable",
+          "arch": ["x64"]
+        }
+      ],
+      "icon": null
+    },
+    "nsis": {
+      "oneClick": true,
+      "allowToChangeInstallationDirectory": false
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer/**/*",
+      "!backend",
+      "!python-dist",
+      "!**/*.pyc"
+    ],
+    "extraResources": [
+      {
+        "from": "python-dist/cluely-backend",
+        "to": "backend",
+        "filter": ["**/*"]
+      }
+    ],
+    "asar": true
+  },
+  "keywords": [
+    "meeting",
+    "copilot",
+    "stealth",
+    "whisper",
+    "groq"
+  ],
+  "license": "MIT",
+  "dependencies": {
+    "marked": "^17.0.5"
+  },
+  "devDependencies": {
+    "electron": "^35.0.0",
+    "electron-builder": "^26.0.0"
+  }
+}
