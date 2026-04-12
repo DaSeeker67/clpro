@@ -418,6 +418,7 @@
       settingsScreen.style.display = "flex";
       contentEl.style.display = "none";
       chatBar.style.display = "none";
+      window.copilot.setFocusable(true);
       // Load saved license key
       window.copilot.getLicenseKey().then(key => {
         if (key) licenseKeyInput.value = key;
@@ -440,6 +441,7 @@
       settingsScreen.style.display = "none";
       contentEl.style.display = "flex";
       chatBar.style.display = "flex";
+      window.copilot.setFocusable(false);
     }
 
     btnSettings.addEventListener("click", showSettings);

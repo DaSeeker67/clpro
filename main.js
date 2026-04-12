@@ -82,7 +82,7 @@ function saveUserContext(text) {
 
 // ─── License Key Storage ─────────────────────────
 
-const LICENSE_SERVER_URL = "https://cluely-server.vercel.app"; // Change to your deployed URL
+const LICENSE_SERVER_URL = "https://clpro-server-ji8l.vercel.app"; // Change to your deployed URL
 
 function getHWID() {
   const raw = `${os.hostname()}-${os.userInfo().username}-${(os.cpus()[0] || {}).model || "unknown"}-${os.platform()}`;
@@ -319,7 +319,9 @@ async function captureScreenshot() {
 
   // Check screenshot usage limit
   if (licenseState.valid) {
+    console.log(`[electron] Checking usage - remaining: ${licenseState.remainingScreenshots}`);
     const allowed = await checkAndTrackUsage("screenshot");
+    console.log(`[electron] Usage check result: ${allowed}`);
     if (!allowed) {
       if (mainWindow && !mainWindow.isDestroyed()) {
         mainWindow.webContents.send("python-message", {
@@ -381,7 +383,8 @@ async function captureScreenshot() {
 
 function registerHotkeys() {
   // Toggle visibility — Ctrl+Shift+Z
-  globalShortcut.register("CommandOrControl+Shift+Z", () => {
+  let ok;
+  ok = globalShortcut.register("CommandOrControl+Shift+Z", () => {
     if (mainWindow) {
       isVisible = !isVisible;
       if (isVisible) {
@@ -392,9 +395,10 @@ function registerHotkeys() {
       console.log(`[electron] Overlay ${isVisible ? "shown" : "hidden"}`);
     }
   });
+  if (!ok) console.error("[electron] FAILED to register Ctrl+Shift+Z");
 
   // Spawn/reopen window — Ctrl+Shift+P
-  globalShortcut.register("CommandOrControl+Shift+P", () => {
+  ok = globalShortcut.register("CommandOrControl+Shift+P", () => {
     if (mainWindow && !mainWindow.isDestroyed()) {
       mainWindow.show();
       isVisible = true;
@@ -405,15 +409,19 @@ function registerHotkeys() {
       console.log("[electron] Overlay spawned");
     }
   });
+  if (!ok) console.error("[electron] FAILED to register Ctrl+Shift+P");
 
   // Screenshot + Answer — Ctrl+G
-  globalShortcut.register("CommandOrControl+G", () => {
-    captureScreenshot();
+  ok = globalShortcut.register("CommandOrControl+G", () => {
     console.log("[electron] Screenshot capture triggered");
+    captureScreenshot().catch((err) => {
+      console.error("[electron] Screenshot error:", err);
+    });
   });
+  if (!ok) console.error("[electron] FAILED to register Ctrl+G");
 
   // Force answer on last 10 seconds of audio
-  globalShortcut.register("CommandOrControl+Shift+A", async () => {
+  ok = globalShortcut.register("CommandOrControl+Shift+A", async () => {
     if (licenseState.valid) {
       const allowed = await checkAndTrackUsage("answer");
       if (!allowed) {
@@ -448,7 +456,9 @@ function registerHotkeys() {
 
 ipcMain.on("renderer-command", async (event, data) => {
   if (data.command === "screenshot") {
-    captureScreenshot();
+    captureScreenshot().catch((err) => {
+      console.error("[electron] Screenshot error:", err);
+    });
   } else if (data.command === "chat" || data.command === "force_answer") {
     // Check answer usage limit
     if (licenseState.valid) {
@@ -507,8 +517,10 @@ ipcMain.handle("save-user-context", (event, text) => {
   return true;
 });
 
-ipcMain.handle("save-api-key", (event, key) => {
+ipcMain.handle("save-api-key", async (event, key) => {
   saveApiKey(key);
+  const licenseValid = licenseState.valid || await validateLicense();
+  if (!licenseValid) return true; // wait for license
   // Restart python backend with new key
   if (pythonProcess) {
     sendToPython("quit");
