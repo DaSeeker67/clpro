@@ -1,6 +1,6 @@
 {
   "name": "cluely-pro",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Stealth meeting copilot — local, screen-capture-proof AI assistant",
   "main": "main.js",
   "scripts": {

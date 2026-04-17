@@ -48,6 +48,12 @@
           <line x1="6" y1="6" x2="18" y2="18"/>
         </svg>
       </button>
+      <button id="btn-quit" title="Quit Cluely Pro">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+          <path d="M18.36 6.64A9 9 0 1 1 5.64 6.64"/>
+          <line x1="12" y1="2" x2="12" y2="12"/>
+        </svg>
+      </button>
     </div>
   </div>
 
@@ -58,6 +64,38 @@
       <button id="btn-settings-close" class="settings-close-btn">&times;</button>
     </div>
     <div class="settings-body">
+      <!-- How to Use -->
+      <div class="how-to-use">
+        <div class="settings-label" style="margin-bottom:8px">How to Use</div>
+        <div class="hotkey-row">
+          <kbd>Ctrl+Shift+Z</kbd>
+          <span>Toggle overlay visibility</span>
+        </div>
+        <div class="hotkey-row">
+          <kbd>Ctrl+Shift+P</kbd>
+          <span>Reopen overlay if hidden</span>
+        </div>
+        <div class="hotkey-row">
+          <kbd>Ctrl+G</kbd>
+          <span>Screenshot + AI answer</span>
+        </div>
+        <div class="hotkey-row">
+          <kbd>Ctrl+Shift+A</kbd>
+          <span>Force answer on last 10s audio</span>
+        </div>
+        <div class="hotkey-row">
+          <kbd>Ctrl+Shift+L</kbd>
+          <span>Toggle listening on/off</span>
+        </div>
+        <div class="hotkey-row">
+          <kbd>Ctrl+Shift+Q</kbd>
+          <span>Quit Cluely Pro</span>
+        </div>
+        <p class="how-to-hint">Cluely Pro listens to system audio automatically. When it detects a question, it answers it. Use <strong>Ctrl+G</strong> to also analyze your screen.</p>
+      </div>
+
+      <div class="settings-divider"></div>
+
       <label class="settings-label" for="license-key-input">License Key</label>
       <div class="settings-input-row">
         <input type="password" id="license-key-input" placeholder="CLP-XXXXX-XXXXX-XXXXX" autocomplete="off" spellcheck="false">
@@ -90,13 +128,16 @@
 
   <!-- Main content -->
   <div id="content">
-    <!-- Transcript (hidden) -->
-    <div id="transcript-section" style="display:none">
+    <!-- Transcript (always visible) -->
+    <div id="transcript-section">
       <div id="transcript-label" class="section-label">TRANSCRIPT</div>
       <div id="transcript" class="scroll-area">
         <span class="placeholder">Waiting for audio...</span>
       </div>
     </div>
+
+    <!-- Divider -->
+    <div class="divider"></div>
 
     <!-- Answer (prominent) -->
     <div id="answer-section">
@@ -108,17 +149,6 @@
         <span class="placeholder">Ctrl+G to screenshot & answer</span>
       </div>
     </div>
-  </div>
-
-  <!-- Chat input -->
-  <div id="chat-bar">
-    <input type="text" id="chat-input" placeholder="Ask anything... (Enter to send)" autocomplete="off" spellcheck="false">
-    <button id="btn-send" title="Send">
-      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-        <line x1="22" y1="2" x2="11" y2="13"/>
-        <polygon points="22 2 15 22 11 13 2 9 22 2"/>
-      </svg>
-    </button>
   </div>
 
   <!-- Resize handle -->
@@ -144,11 +174,9 @@
     const btnScreenshot = document.getElementById("btn-screenshot");
     const btnSettings = document.getElementById("btn-settings");
     const btnClose = document.getElementById("btn-close");
-    const chatInput = document.getElementById("chat-input");
-    const btnSend = document.getElementById("btn-send");
+    const btnQuit = document.getElementById("btn-quit");
     const settingsScreen = document.getElementById("settings-screen");
     const contentEl = document.getElementById("content");
-    const chatBar = document.getElementById("chat-bar");
     const apiKeyInput = document.getElementById("api-key-input");
     const btnSaveKey = document.getElementById("btn-save-key");
     const btnSettingsClose = document.getElementById("btn-settings-close");
@@ -357,6 +385,10 @@
       window.copilot.closeWindow();
     });
 
+    btnQuit.addEventListener("click", () => {
+      window.copilot.quitApp();
+    });
+
     // License key handlers
     btnToggleLicenseVis.addEventListener("click", () => {
       licenseKeyInput.type = licenseKeyInput.type === "password" ? "text" : "password";
@@ -417,7 +449,6 @@
     function showSettings() {
       settingsScreen.style.display = "flex";
       contentEl.style.display = "none";
-      chatBar.style.display = "none";
       window.copilot.setFocusable(true);
       // Load saved license key
       window.copilot.getLicenseKey().then(key => {
@@ -440,7 +471,6 @@
     function hideSettings() {
       settingsScreen.style.display = "none";
       contentEl.style.display = "flex";
-      chatBar.style.display = "flex";
       window.copilot.setFocusable(false);
     }
 
@@ -521,32 +551,6 @@
       window.copilot.getApiKey()
     ]).then(([licenseKey, apiKey]) => {
       if (!licenseKey || !apiKey) showSettings();
-    });
-
-    // Chat input
-    function sendChat() {
-      const text = chatInput.value.trim();
-      if (!text) return;
-      chatInput.value = "";
-      window.copilot.sendCommand("chat", { prompt: text });
-      startAnswer();
-    }
-
-    chatInput.addEventListener("keydown", (e) => {
-      e.stopPropagation(); // prevent hotkey conflicts
-      if (e.key === "Enter") {
-        sendChat();
-      }
-    });
-
-    btnSend.addEventListener("click", sendChat);
-
-    // Make chat input focusable (override non-focusable window)
-    chatInput.addEventListener("focus", () => {
-      window.copilot.setFocusable(true);
-    });
-    chatInput.addEventListener("blur", () => {
-      window.copilot.setFocusable(false);
     });
   </script>
 </body>

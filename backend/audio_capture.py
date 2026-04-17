@@ -24,11 +24,17 @@ class AudioCapture:
     Captures system audio via loopback and pushes 30ms frames
     into a thread-safe queue for downstream processing.
     Handles sample rate conversion if the device doesn't support 16kHz.
+
+    mode:
+      "auto"     — try WASAPI loopback first, fall back to mic (default, legacy)
+      "loopback" — only try WASAPI loopback, fail if unavailable
+      "mic"      — only use microphone input
     """
 
-    def __init__(self, audio_queue: queue.Queue, device=None):
+    def __init__(self, audio_queue: queue.Queue, device=None, mode="auto"):
         self.audio_queue = audio_queue
         self.device = device
+        self.mode = mode
         self.stream = None
         self._running = False
         self._native_sr = SAMPLE_RATE
@@ -70,7 +76,7 @@ class AudioCapture:
         self.audio_queue.put(audio_int16.tobytes())
 
     def _try_wasapi_loopback(self):
-        """Try to start WASAPI loopback capture via pyaudiowpatch (Windows only)."""
+        """Try to start WASAPI loopback capture via pyaudiowpatch (Windows only), robustly matching default output device (including headphones)."""
         try:
             import pyaudiowpatch as pyaudio
 
@@ -78,7 +84,9 @@ class AudioCapture:
 
             # Find the default WASAPI output device's loopback
             wasapi_info = p.get_host_api_info_by_type(pyaudio.paWASAPI)
-            default_speakers = p.get_device_info_by_index(wasapi_info["defaultOutputDevice"])
+            default_idx = wasapi_info["defaultOutputDevice"]
+            default_speakers = p.get_device_info_by_index(default_idx)
+            print(f"[audio] Default output device: {default_speakers['name']} (index {default_idx})", file=sys.stderr)
 
             # Collect ALL loopback devices
             loopback_devices = []
@@ -86,52 +94,52 @@ class AudioCapture:
                 dev = p.get_device_info_by_index(i)
                 if dev["name"].endswith(" [Loopback]") and dev["hostApi"] == wasapi_info["index"]:
                     loopback_devices.append(dev)
+                    print(f"[audio] Found loopback: {dev['name']} (index {dev['index']})", file=sys.stderr)
 
             if not loopback_devices:
+                print("[audio] No WASAPI loopback devices found.", file=sys.stderr)
                 p.terminate()
                 return False
 
-            # Prefer loopback of the actual default output device (where audio goes)
-            # Fallback: Speakers/Realtek, then any loopback
+            # Try to match the default output device name (case-insensitive, ignore [Loopback] suffix)
+            base_name = default_speakers["name"].replace(" [Loopback]", "").strip().lower()
             loopback_device = None
-
-            # First try: match default output device
-            base_name = default_speakers["name"]
             for dev in loopback_devices:
-                if dev["name"].replace(" [Loopback]", "") in base_name:
+                dev_base = dev["name"].replace(" [Loopback]", "").strip().lower()
+                if dev_base == base_name:
                     loopback_device = dev
+                    print(f"[audio] Matched loopback device: {dev['name']} (index {dev['index']})", file=sys.stderr)
                     break
 
-            # Second try: Speakers/Realtek (reliable fallback)
+            # If not exact, try substring match (for some USB/Bluetooth devices)
             if loopback_device is None:
                 for dev in loopback_devices:
-                    name_lower = dev["name"].lower()
-                    if "speaker" in name_lower or "realtek" in name_lower:
+                    dev_base = dev["name"].replace(" [Loopback]", "").strip().lower()
+                    if base_name in dev_base or dev_base in base_name:
                         loopback_device = dev
+                        print(f"[audio] Substring-matched loopback device: {dev['name']} (index {dev['index']})", file=sys.stderr)
                         break
 
+            # Fallback: just use the first available loopback device
             if loopback_device is None:
                 loopback_device = loopback_devices[0]
+                print(f"[audio] Fallback to first loopback device: {loopback_device['name']} (index {loopback_device['index']})", file=sys.stderr)
 
             self._native_sr = int(loopback_device["defaultSampleRate"])
             self._native_channels = min(loopback_device["maxInputChannels"], 2)
             native_block = int(self._native_sr * 0.03)  # 30ms
 
-            print(f"[audio] WASAPI loopback device: {loopback_device['name']}", file=sys.stderr)
+            print(f"[audio] WASAPI loopback device selected: {loopback_device['name']} (index {loopback_device['index']})", file=sys.stderr)
             print(f"[audio] Native: {self._native_sr}Hz, {self._native_channels}ch -> resampling to {SAMPLE_RATE}Hz mono", file=sys.stderr)
 
             self._pyaudio = p
             self._wasapi_failed = False
 
             # Test if the loopback actually produces data before committing
-            # Some devices (especially Bluetooth) hang on read()
             test_ok = self._test_wasapi_stream(p, loopback_device, native_block)
 
             if not test_ok:
                 print("[audio] WASAPI loopback test failed (no data / blocked)", file=sys.stderr)
-                # Don't call p.terminate() — the test thread may still be stuck in
-                # a blocking read(), and terminating PyAudio would crash PortAudio.
-                # The daemon thread will die when the process exits.
                 self.stream = None
                 self._use_wasapi = False
                 return False
@@ -157,30 +165,16 @@ class AudioCapture:
             return False
 
     def _test_wasapi_stream(self, p, device, block_size):
-        """Quick test if WASAPI loopback produces data within 2 seconds."""
+        """Check if the WASAPI loopback stream can be opened (non-blocking).
+
+        The old approach tried to read() data within 2 seconds, which blocks
+        indefinitely when no audio is currently playing — causing a false failure.
+        Simply opening and closing the stream is sufficient to confirm the device
+        is accessible; actual audio will flow once something plays.
+        """
         import pyaudiowpatch as pyaudio
-        import ctypes
-
-        result = [False]
-        test_done = threading.Event()
-        test_stream = [None]
-
-        def test_read():
-            try:
-                for _ in range(10):
-                    if test_done.is_set():
-                        break
-                    data = test_stream[0].read(block_size, exception_on_overflow=False)
-                    if len(data) > 0:
-                        result[0] = True
-                        break
-            except Exception:
-                pass
-            finally:
-                test_done.set()
-
         try:
-            test_stream[0] = p.open(
+            test_stream = p.open(
                 format=pyaudio.paFloat32,
                 channels=self._native_channels,
                 rate=self._native_sr,
@@ -188,58 +182,27 @@ class AudioCapture:
                 input_device_index=device["index"],
                 frames_per_buffer=block_size,
             )
+            test_stream.close()
+            print("[audio] WASAPI loopback stream opened OK", file=sys.stderr)
+            return True
         except Exception as e:
             print(f"[audio] WASAPI test open failed: {e}", file=sys.stderr)
             return False
 
-        t = threading.Thread(target=test_read, daemon=True)
-        t.start()
-
-        # Wait max 2 seconds — if read() blocks, loopback is broken
-        test_done.wait(timeout=2.0)
-
-        # Only close stream if the test thread completed (not stuck in read)
-        if test_done.is_set():
-            try:
-                test_stream[0].close()
-            except Exception:
-                pass
-
-        if not test_done.is_set():
-            print("[audio] WASAPI test timed out (read blocked)", file=sys.stderr)
-            return False
-
-        return result[0]
-
     def _wasapi_read_loop(self):
         """Background thread that reads from WASAPI loopback stream."""
         native_block = int(self._native_sr * 0.03)
-        got_audio = False
-        start_time = __import__('time').time()
 
+        print("[audio] WASAPI loopback: read loop started", file=sys.stderr)
         while self._running:
             try:
                 data = self.stream.read(native_block, exception_on_overflow=False)
                 audio = np.frombuffer(data, dtype=np.float32)
 
-                # Check if it's actual audio (not just silence/zeros)
-                if not got_audio:
-                    rms = np.sqrt(np.mean(audio ** 2))
-                    if rms > 1e-7:
-                        got_audio = True
-                        print("[audio] WASAPI loopback: receiving audio", file=sys.stderr)
-                    elif __import__('time').time() - start_time > 3:
-                        # 3 seconds with zero audio — loopback is probably dead
-                        print("[audio] WASAPI loopback: no signal after 3s, giving up", file=sys.stderr)
-                        self._wasapi_failed = True
-                        break
-
                 if self._native_channels > 1:
                     audio = audio.reshape(-1, self._native_channels)
                 self._process_audio(audio)
             except OSError:
-                # stream.read() can hang on some BT devices; this won't help
-                # but handles the case where the stream is closed
                 if self._running:
                     print("[audio] WASAPI read: stream closed", file=sys.stderr)
                 break
@@ -249,17 +212,33 @@ class AudioCapture:
                 break
 
     def start(self):
-        """Start capturing audio — tries WASAPI loopback first, then microphone fallback."""
+        """Start capturing audio based on self.mode."""
         self._running = True
         self._wasapi_failed = False
 
-        # Strategy 1: WASAPI loopback (captures system audio directly)
+        if self.mode == "loopback":
+            # Only try WASAPI loopback — fail if unavailable
+            if sys.platform == "win32":
+                if self._try_wasapi_loopback():
+                    print("[audio] Capture started (WASAPI loopback)", file=sys.stderr)
+                    return
+            raise RuntimeError("WASAPI loopback not available")
+
+        if self.mode == "mic":
+            # Only use microphone input
+            self._start_mic()
+            return
+
+        # mode == "auto": try WASAPI loopback first, fall back to mic
         if sys.platform == "win32" and self.device is None:
             if self._try_wasapi_loopback():
                 print("[audio] Capture started (WASAPI loopback)", file=sys.stderr)
                 return
 
-        # Strategy 2: microphone input
+        self._start_mic()
+
+    def _start_mic(self):
+        """Start microphone capture."""
         import sounddevice as sd
 
         print("[audio] Using microphone input", file=sys.stderr)
@@ -295,7 +274,7 @@ class AudioCapture:
             callback=self._sd_callback,
         )
         self.stream.start()
-        print(f"[audio] Capture started (microphone)", file=sys.stderr)
+        print("[audio] Capture started (microphone)", file=sys.stderr)
 
     def stop(self):
         """Stop the audio capture stream."""

@@ -13,36 +13,39 @@ from groq import Groq, RateLimitError
 
 MODEL = "llama-3.3-70b-versatile"
 
-SYSTEM_PROMPT = """You are a stealth assistant displayed on a small overlay. You help with meetings, interviews, online assessments, aptitude tests, and coding challenges.
+SYSTEM_PROMPT = """\
+You are an expert technical copilot running as a stealth overlay during coding interviews, online assessments, and technical rounds. Your job is to give COMPLETE, WORKING, CORRECT answers — not hints.
 
-Rules:
-- Be direct. No preamble, no "Great question!", no filler.
-- Never reveal you're an AI or that you're listening.
-- Format for fast scanning: use bullet points for lists, backticks for code.
+CRITICAL RULES:
+- NEVER say just "the answer is yes" or give a one-liner for a coding/DSA problem.
+- NEVER give a partial answer. If it's a coding problem, write the FULL working function.
+- NEVER explain what you're going to do — just do it.
+- Do NOT reveal you are an AI or listening.
+- Format for fast reading: headers, bullets, fenced code blocks.
 
-Question types — adapt your response:
+━━━ CODING / DSA / ALGORITHM PROBLEMS ━━━
+When a coding problem is detected (mentions array, tree, graph, string, DP, recursion, two pointers, binary search, complexity, function, implement, write, code, return, input/output, etc.):
+1. **Intuition** (2-3 lines max): The core idea / pattern being used.
+2. **Approach**: Step-by-step algorithm in plain English (3-6 bullets).
+3. **Code**: Full working solution in the language asked (default Python). Correct, runnable, handles edge cases.
+4. **Dry Run**: Trace through the given example input step by step to prove correctness.
+5. **Complexity**: Time: O(...) | Space: O(...) with one-line justification.
 
-**MCQ / Multiple Choice:**
-- State the correct option letter and label first (e.g. "**B) O(n log n)**")
-- Follow with a one-line justification.
+━━━ MCQ / MULTIPLE CHOICE ━━━
+- State the correct option letter+label first: **B) O(n log n)**
+- One-line justification. Nothing else.
 
-**Aptitude / Quantitative / Logical Reasoning:**
-- Give the final answer first, then the short step-by-step working.
-- For numerical answers, show the key formula used.
+━━━ APTITUDE / MATH / QUANTITATIVE ━━━
+- Final answer first, then step-by-step working showing key formula.
+- Keep it under 6 lines.
 
-**Coding / DSA:**
-- Give only the key code snippet in the required language.
-- Mention time & space complexity in one line.
+━━━ CONCEPTUAL / TECHNICAL ━━━
+- 2-4 sentences with one concrete example. No fluff.
 
-**Technical / Conceptual:**
-- Answer in 2-3 sentences MAX with one concrete example if helpful.
-
-**Verbal / Reading Comprehension:**
-- State the correct answer and cite the key phrase from the passage.
-
-**General / Meeting Questions:**
-- Answer in 2-3 sentences MAX. Every word must earn its place.
-- If context is unclear, say 'Not enough context yet.'"""
+━━━ BEHAVIORAL / GENERAL MEETING ━━━
+- 2-3 sharp sentences. Every word must earn its place.
+- If context is too unclear: say exactly "Not enough context yet — please repeat the question."
+"""
 
 
 class Assistant:
@@ -83,7 +86,7 @@ class Assistant:
                     {"role": "user", "content": user_message},
                 ],
                 temperature=0.3,
-                max_tokens=512,
+                max_tokens=1200,
                 stream=False,
             )
             try:
@@ -129,7 +132,7 @@ class Assistant:
                     {"role": "user", "content": user_message},
                 ],
                 temperature=0.3,
-                max_tokens=512,
+                max_tokens=1200,
                 stream=True,
             )
             try:
@@ -178,15 +181,39 @@ class Assistant:
     def _build_user_message(self, context: str, question: str) -> str:
         """Build the user message with context and question."""
         # Truncate context if too long (keep most recent)
-        max_context_chars = 2000
+        max_context_chars = 3000
         if len(context) > max_context_chars:
             context = "..." + context[-max_context_chars:]
 
+        # Detect problem type to give the model a stronger hint
+        q_lower = question.lower()
+        coding_keywords = [
+            "array", "string", "tree", "graph", "linked list", "stack", "queue",
+            "dp", "dynamic programming", "recursion", "binary search", "two pointer",
+            "sliding window", "hash", "sort", "implement", "function", "algorithm",
+            "complexity", "return", "input", "output", "code", "write a", "program",
+            "subarray", "subsequence", "matrix", "heap", "trie", "backtrack",
+        ]
+        is_coding = any(kw in q_lower for kw in coding_keywords)
+
+        if is_coding:
+            type_hint = (
+                "This is a CODING/DSA problem. You MUST provide:\n"
+                "1. Intuition (what pattern/technique applies)\n"
+                "2. Step-by-step approach\n"
+                "3. Full working code (Python unless another language is specified)\n"
+                "4. Dry run on the example input shown\n"
+                "5. Time & Space complexity\n"
+                "Do NOT give a one-liner answer. Write the complete solution."
+            )
+        else:
+            type_hint = "Answer directly and concisely. If MCQ, state the option first. If math/aptitude, show working."
+
         return (
-            f"Transcript (last ~2 minutes):\n"
+            f"Recent transcript (last ~2 min):\n"
             f"---\n{context}\n---\n\n"
-            f"Question/Problem: \"{question}\"\n\n"
-            f"Provide the answer directly. If it's MCQ, state the correct option first. If aptitude/math, show the answer then brief working."
+            f"Question/Problem:\n\"{question}\"\n\n"
+            f"{type_hint}"
         )
 
     @property

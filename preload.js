@@ -52,4 +52,7 @@ contextBridge.exposeInMainWorld("copilot", {
   getLicenseStatus: () => {
     return ipcRenderer.invoke("get-license-status");
   },
+  quitApp: () => {
+    ipcRenderer.send("quit-app");
+  },
 });

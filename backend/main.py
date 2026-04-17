@@ -103,9 +103,12 @@ class CopilotPipeline:
         self._running = False
         self._initialized = False
 
-        # Queues
-        self.audio_queue = queue.Queue()   # audio frames
+        # Shared chunk queue (both sources feed into this)
         self.chunk_queue = queue.Queue()   # .wav file paths
+
+        # Separate audio queues per source (keeps VAD state independent)
+        self.audio_queue_loopback = queue.Queue()
+        self.audio_queue_mic = queue.Queue()
 
         # State
         self._listening = True
@@ -125,8 +128,12 @@ class CopilotPipeline:
         fallback_key = os.getenv("GROQ_API_fallback")
         user_context = os.getenv("CLUELY_USER_CONTEXT", "")
 
-        self.capture = AudioCapture(self.audio_queue)
-        self.chunker = AudioChunker(self.audio_queue, self.chunk_queue)
+        # Dual audio capture: loopback (speaker) + microphone
+        self.capture_loopback = AudioCapture(self.audio_queue_loopback, mode="loopback")
+        # self.capture_mic = AudioCapture(self.audio_queue_mic, mode="mic")
+        self.chunker_loopback = AudioChunker(self.audio_queue_loopback, self.chunk_queue)
+        # self.chunker_mic = AudioChunker(self.audio_queue_mic, self.chunk_queue)
+
         self.transcriber = Transcriber(api_key=api_key, fallback_key=fallback_key)
         self.context = ContextManager()
         self.assistant = Assistant(api_key=api_key, fallback_key=fallback_key, user_context=user_context)
@@ -155,25 +162,30 @@ class CopilotPipeline:
             print_status("Press Ctrl+C to exit")
             print()
 
-        # Start audio capture (non-fatal — screenshot still works without audio)
-        audio_ok = False
+        # Start audio capture — try both loopback and mic independently
+        loopback_ok = False
+
         try:
-            self.capture.start()
-            audio_ok = True
+            self.capture_loopback.start()
+            loopback_ok = True
         except Exception as e:
-            error_msg = f"Audio capture failed: {e}"
+            print(f"[pipeline] Speaker/loopback capture failed: {e}", file=sys.stderr)
+
+        if not loopback_ok:
+            error_msg = "System audio (WASAPI loopback) failed"
             print(f"[ERROR] {error_msg}", file=sys.stderr)
             if self.ipc_mode:
                 emit_ipc("status", text="Audio failed - screenshot mode only (Ctrl+G)")
             else:
-                print_status(f"Audio failed: {e}")
-                print_status("Screenshot mode still works (Ctrl+Shift+A for manual)")
+                print_status("Audio failed — screenshot mode still works")
+        else:
+            print(f"[pipeline] Audio source active: speaker", file=sys.stderr)
+            if self.ipc_mode:
+                emit_ipc("status", text="Capturing: speaker")
 
-        if audio_ok:
-            # Start chunker in a thread
-            chunker_thread = threading.Thread(target=self.chunker.run, daemon=True)
-            chunker_thread.start()
-            self._threads.append(chunker_thread)
+            chunker_thread_lb = threading.Thread(target=self.chunker_loopback.run, daemon=True)
+            chunker_thread_lb.start()
+            self._threads.append(chunker_thread_lb)
 
             # Start transcription consumer in a thread
             transcribe_thread = threading.Thread(target=self._transcription_loop, daemon=True)
@@ -392,9 +404,9 @@ class CopilotPipeline:
     def stop(self):
         """Stop all pipeline components."""
         self._running = False
-        self.capture.stop()
-        self.chunker.stop()
-        self.chunker.cleanup()
+        self.capture_loopback.stop()
+        self.chunker_loopback.stop()
+        self.chunker_loopback.cleanup()
 
         if self.ipc_mode:
             emit_ipc("status", text="Pipeline stopped")

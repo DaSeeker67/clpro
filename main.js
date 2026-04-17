@@ -263,6 +263,15 @@ function startPythonBackend() {
     env: env,
   });
 
+  // Suppress EPIPE on stdin — Python may close before we finish writing (e.g. during quit)
+  pythonProcess.stdin.on("error", (err) => {
+    if (err.code === "EPIPE" || err.code === "ERR_STREAM_DESTROYED") {
+      console.warn("[electron] Python stdin closed (expected during shutdown)");
+    } else {
+      console.error("[electron] Python stdin error:", err.message);
+    }
+  });
+
   console.log(`[electron] Python backend started (PID: ${pythonProcess.pid})`);
 
   // Read JSON lines from Python's stdout
@@ -308,7 +317,12 @@ function handlePythonMessage(msg) {
 function sendToPython(command, data = {}) {
   if (pythonProcess && pythonProcess.stdin.writable) {
     const msg = JSON.stringify({ command, ...data });
-    pythonProcess.stdin.write(msg + "\n");
+    try {
+      pythonProcess.stdin.write(msg + "\n");
+    } catch (e) {
+      // EPIPE — Python process already closed its stdin (e.g. during shutdown)
+      console.warn(`[electron] sendToPython EPIPE (${command}): process already closed`);
+    }
   }
 }
 
@@ -444,12 +458,28 @@ function registerHotkeys() {
     console.log("[electron] Toggle listening");
   });
 
+  // Quit app — Ctrl+Shift+Q
+  ok = globalShortcut.register("CommandOrControl+Shift+Q", () => {
+    console.log("[electron] Quit via hotkey");
+    if (pythonProcess) {
+      sendToPython("quit");
+      setTimeout(() => {
+        if (pythonProcess) pythonProcess.kill();
+        app.quit();
+      }, 800);
+    } else {
+      app.quit();
+    }
+  });
+  if (!ok) console.error("[electron] FAILED to register Ctrl+Shift+Q");
+
   console.log("[electron] Hotkeys registered:");
   console.log("  Ctrl+Shift+Z -> Toggle overlay visibility");
   console.log("  Ctrl+Shift+P -> Reopen/spawn overlay");
   console.log("  Ctrl+G       -> Screenshot + AI answer");
   console.log("  Ctrl+Shift+A -> Force answer on last 10s audio");
   console.log("  Ctrl+Shift+L -> Toggle listening on/off");
+  console.log("  Ctrl+Shift+Q -> Quit Cluely Pro");
 }
 
 // ─── IPC from Renderer ──────────────────────────
@@ -490,6 +520,19 @@ ipcMain.on("close-window", () => {
     mainWindow.hide();
     isVisible = false;
     console.log("[electron] Overlay closed (Ctrl+Shift+P to reopen)");
+  }
+});
+
+ipcMain.on("quit-app", () => {
+  console.log("[electron] Quit requested");
+  if (pythonProcess) {
+    sendToPython("quit");
+    setTimeout(() => {
+      if (pythonProcess) pythonProcess.kill();
+      app.quit();
+    }, 800);
+  } else {
+    app.quit();
   }
 });
 
