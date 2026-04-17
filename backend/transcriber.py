@@ -1,35 +1,31 @@
 """
-transcriber.py — Groq Whisper STT integration.
+transcriber.py — Speech-to-text integration (provider-agnostic).
 
-Sends audio chunks (.wav files) to Groq's Whisper API for transcription.
-Returns text with ~300-500ms latency per chunk.
+Sends audio chunks (.wav files) to the configured provider's STT API.
+For providers without native STT (e.g. Claude), falls back to Groq Whisper.
 """
 
 import os
 import sys
 import time
 
-from groq import Groq, RateLimitError
-
-
-# Whisper model — turbo variant is fastest
-MODEL = "whisper-large-v3-turbo"
+from provider import BaseProvider, QuotaExceededError
 
 
 class Transcriber:
-    """Transcribes audio chunks using Groq's Whisper API."""
+    """Transcribes audio chunks using the configured AI provider's STT API."""
 
-    def __init__(self, api_key: str = None, fallback_key: str = None):
+    def __init__(self, provider: BaseProvider):
         """
         Args:
-            api_key: Groq API key. If None, reads from GROQ_API_KEY env var.
-            fallback_key: Fallback Groq API key used when primary is rate-limited.
+            provider: AI provider instance (handles STT routing internally).
         """
-        self.client = Groq(api_key=api_key)
-        self.fallback_client = Groq(api_key=fallback_key) if fallback_key else None
+        self.provider = provider
         self._total_calls = 0
         self._total_latency = 0.0
-        print("[transcriber] Initialized with Groq Whisper", file=sys.stderr)
+        self._quota_warned = False  # Only show quota error once, not per chunk
+        stt_info = "native" if provider.supports_transcription else "Groq fallback"
+        print(f"[transcriber] Initialized with {provider.name} provider ({stt_info})", file=sys.stderr)
 
     def transcribe(self, wav_path: str, language: str = "en") -> dict:
         """
@@ -40,46 +36,38 @@ class Transcriber:
             language: Language code (default: English).
 
         Returns:
-            dict with keys: text, duration_ms, success
+            dict with keys: text, duration_ms, success, quota_error (optional)
         """
         if not os.path.exists(wav_path):
             return {"text": "", "duration_ms": 0, "success": False}
 
         start = time.time()
         try:
-            try:
-                with open(wav_path, "rb") as audio_file:
-                    response = self.client.audio.transcriptions.create(
-                        file=("audio.wav", audio_file),
-                        model=MODEL,
-                        language=language,
-                        response_format="text",
-                    )
-            except RateLimitError:
-                if not self.fallback_client:
-                    raise
-                print("[transcriber] Primary key rate-limited, switching to fallback", file=sys.stderr)
-                with open(wav_path, "rb") as audio_file:
-                    response = self.fallback_client.audio.transcriptions.create(
-                        file=("audio.wav", audio_file),
-                        model=MODEL,
-                        language=language,
-                        response_format="text",
-                    )
-
+            text = self.provider.transcribe(wav_path, language)
             latency_ms = (time.time() - start) * 1000
             self._total_calls += 1
             self._total_latency += latency_ms
-
-            text = response.strip() if isinstance(response, str) else response.text.strip()
+            self._quota_warned = False  # Reset on success
 
             if text:
-                print(f"[transcriber] ({latency_ms:.0f}ms) \"{text[:80]}{'...' if len(text) > 80 else ''}\"" , file=sys.stderr)
+                print(f"[transcriber] ({latency_ms:.0f}ms) \"{text[:80]}{'...' if len(text) > 80 else ''}\"", file=sys.stderr)
 
             return {
                 "text": text,
                 "duration_ms": latency_ms,
-                "success": True,
+                "success": bool(text),
+            }
+
+        except QuotaExceededError as e:
+            latency_ms = (time.time() - start) * 1000
+            if not self._quota_warned:
+                print(f"[transcriber] QUOTA EXCEEDED ({latency_ms:.0f}ms): {e}", file=sys.stderr)
+                self._quota_warned = True
+            return {
+                "text": "",
+                "duration_ms": latency_ms,
+                "success": False,
+                "quota_error": str(e),
             }
 
         except Exception as e:

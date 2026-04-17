@@ -682,3 +682,81 @@ kbd {
 .settings-body {
   overflow-y: auto;
 }
+
+/* ─── Provider Selector ────────────────── */
+
+.provider-select-wrapper {
+  position: relative;
+}
+
+.provider-select-wrapper select {
+  width: 100%;
+  appearance: none;
+  -webkit-appearance: none;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  padding: 7px 30px 7px 10px;
+  font-family: 'Inter', sans-serif;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-primary);
+  outline: none;
+  cursor: pointer;
+  transition: border-color 0.2s, box-shadow 0.2s;
+}
+
+.provider-select-wrapper select:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent-dim), 0 0 8px var(--accent-dim);
+}
+
+.provider-select-wrapper select option {
+  background: var(--bg-solid);
+  color: var(--text-primary);
+  padding: 6px;
+}
+
+.provider-select-wrapper::after {
+  content: "▾";
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  color: var(--text-dim);
+  font-size: 10px;
+  pointer-events: none;
+}
+
+.provider-model-hint {
+  font-size: 9px;
+  color: var(--text-dim);
+  font-family: 'JetBrains Mono', monospace;
+  margin-top: 2px;
+}
+
+/* ─── Claude Transcription Notice ──────── */
+
+.claude-notice {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 6px 8px;
+  background: rgba(251, 191, 36, 0.08);
+  border: 1px solid rgba(251, 191, 36, 0.15);
+  border-radius: var(--radius-sm);
+  font-size: 10px;
+  color: var(--question);
+  line-height: 1.4;
+}
+
+.claude-notice .notice-icon {
+  flex-shrink: 0;
+  font-size: 11px;
+  margin-top: 1px;
+}
+
+.claude-notice .notice-text {
+  flex: 1;
+}
+

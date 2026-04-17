@@ -1,17 +1,16 @@
 """
-assistant.py — Groq LLaMA answer generation.
+assistant.py — AI answer generation (provider-agnostic).
 
 When a question is detected, sends the rolling transcript context
-plus the question to LLaMA 3.3 70B via Groq's streaming API.
+plus the question to the configured AI provider's streaming API.
 Answers are brief and direct — designed for a small overlay.
 """
 
 import sys
 import time
-from groq import Groq, RateLimitError
 
+from provider import BaseProvider
 
-MODEL = "llama-3.3-70b-versatile"
 
 SYSTEM_PROMPT = """\
 You are an expert technical copilot running as a stealth overlay during coding interviews, online assessments, and technical rounds. Your job is to give COMPLETE, WORKING, CORRECT answers — not hints.
@@ -49,15 +48,14 @@ When a coding problem is detected (mentions array, tree, graph, string, DP, recu
 
 
 class Assistant:
-    """Generates brief answers to detected questions using Groq LLaMA."""
+    """Generates brief answers to detected questions using the configured AI provider."""
 
-    def __init__(self, api_key: str = None, fallback_key: str = None, user_context: str = ""):
-        self.client = Groq(api_key=api_key)
-        self.fallback_client = Groq(api_key=fallback_key) if fallback_key else None
+    def __init__(self, provider: BaseProvider, user_context: str = ""):
+        self.provider = provider
         self.user_context = user_context
         self._total_calls = 0
         self._total_latency = 0.0
-        print("[assistant] Initialized with Groq LLaMA 3.3 70B", file=sys.stderr)
+        print(f"[assistant] Initialized with {provider.name} provider", file=sys.stderr)
 
     def _build_system_prompt(self):
         prompt = SYSTEM_PROMPT
@@ -79,24 +77,13 @@ class Assistant:
         start = time.time()
         try:
             user_message = self._build_user_message(context, question)
-            api_args = dict(
-                model=MODEL,
-                messages=[
-                    {"role": "system", "content": self._build_system_prompt()},
-                    {"role": "user", "content": user_message},
-                ],
-                temperature=0.3,
-                max_tokens=1200,
-                stream=False,
+            messages = [
+                {"role": "system", "content": self._build_system_prompt()},
+                {"role": "user", "content": user_message},
+            ]
+            answer = self.provider.chat_complete(
+                messages, temperature=0.3, max_tokens=1200, stream=False
             )
-            try:
-                response = self.client.chat.completions.create(**api_args)
-            except RateLimitError:
-                if not self.fallback_client:
-                    raise
-                print("[assistant] Primary key rate-limited, switching to fallback", file=sys.stderr)
-                response = self.fallback_client.chat.completions.create(**api_args)
-            answer = response.choices[0].message.content.strip()
             latency_ms = (time.time() - start) * 1000
             self._total_calls += 1
             self._total_latency += latency_ms
@@ -120,54 +107,20 @@ class Assistant:
             dict with: type ("chunk" or "done"), text, latency_ms
         """
         start = time.time()
-        first_token = True
-        full_text = []
-
         try:
             user_message = self._build_user_message(context, question)
-            api_args = dict(
-                model=MODEL,
-                messages=[
-                    {"role": "system", "content": self._build_system_prompt()},
-                    {"role": "user", "content": user_message},
-                ],
-                temperature=0.3,
-                max_tokens=1200,
-                stream=True,
-            )
-            try:
-                stream = self.client.chat.completions.create(**api_args)
-            except RateLimitError:
-                if not self.fallback_client:
-                    raise
-                print("[assistant] Primary key rate-limited, switching to fallback", file=sys.stderr)
-                stream = self.fallback_client.chat.completions.create(**api_args)
-
-            for chunk in stream:
-                if chunk.choices[0].delta.content:
-                    text = chunk.choices[0].delta.content
-                    full_text.append(text)
-                    latency_ms = (time.time() - start) * 1000
-
-                    if first_token:
-                        print(f"[assistant] First token: {latency_ms:.0f}ms", file=sys.stderr)
-                        first_token = False
-
-                    yield {
-                        "type": "chunk",
-                        "text": text,
-                        "latency_ms": latency_ms,
-                    }
-
-            total_latency = (time.time() - start) * 1000
-            self._total_calls += 1
-            self._total_latency += total_latency
-
-            yield {
-                "type": "done",
-                "text": "".join(full_text),
-                "latency_ms": total_latency,
-            }
+            messages = [
+                {"role": "system", "content": self._build_system_prompt()},
+                {"role": "user", "content": user_message},
+            ]
+            for chunk in self.provider.chat_complete(
+                messages, temperature=0.3, max_tokens=1200, stream=True
+            ):
+                # Track stats on completion
+                if chunk["type"] == "done":
+                    self._total_calls += 1
+                    self._total_latency += chunk["latency_ms"]
+                yield chunk
 
         except Exception as e:
             latency_ms = (time.time() - start) * 1000

@@ -108,12 +108,41 @@
 
       <div class="settings-divider"></div>
 
-      <label class="settings-label" for="api-key-input">Groq API Key</label>
+      <!-- Provider Selector -->
+      <label class="settings-label" for="provider-select">AI Provider</label>
+      <div class="provider-select-wrapper">
+        <select id="provider-select">
+          <option value="groq">Groq — LLaMA 3.3 70B</option>
+          <option value="openai">OpenAI — GPT-4o</option>
+          <option value="claude">Claude — Sonnet 4</option>
+        </select>
+      </div>
+      <div id="provider-model-hint" class="provider-model-hint"></div>
+
+      <div class="settings-divider"></div>
+
+      <!-- Primary API Key -->
+      <label class="settings-label" id="api-key-label" for="api-key-input">Groq API Key</label>
       <div class="settings-input-row">
         <input type="password" id="api-key-input" placeholder="gsk_..." autocomplete="off" spellcheck="false">
         <button id="btn-toggle-key-vis" class="key-vis-btn" title="Show/Hide">👁</button>
       </div>
-      <p class="settings-hint">Get a free key at <span class="settings-link" id="groq-link">console.groq.com</span></p>
+      <p class="settings-hint" id="api-key-hint">Get a free key at <span class="settings-link" id="api-key-link">console.groq.com</span></p>
+
+      <!-- Claude: Groq key for transcription -->
+      <div id="claude-stt-section" style="display:none">
+        <div class="claude-notice">
+          <span class="notice-icon">⚠</span>
+          <span class="notice-text">Claude has no speech API. A Groq key is needed for audio transcription.</span>
+        </div>
+        <label class="settings-label" for="groq-stt-key-input" style="margin-top:6px">Groq Key (for transcription)</label>
+        <div class="settings-input-row">
+          <input type="password" id="groq-stt-key-input" placeholder="gsk_..." autocomplete="off" spellcheck="false">
+          <button id="btn-toggle-groq-stt-vis" class="key-vis-btn" title="Show/Hide">👁</button>
+        </div>
+        <p class="settings-hint">Get a free key at <span class="settings-link" id="groq-stt-link">console.groq.com</span></p>
+      </div>
+
       <button id="btn-save-key" class="settings-save-btn">Save & Connect</button>
       <div id="key-status" class="key-status"></div>
 
@@ -162,6 +191,35 @@
     let transcriptText = "";
     let currentAnswer = "";
     let isStreaming = false;
+    let currentProvider = "groq";
+
+    // ─── Provider config ────────────────────
+    const PROVIDER_CONFIG = {
+      groq: {
+        label: "Groq API Key",
+        placeholder: "gsk_...",
+        linkText: "console.groq.com",
+        linkUrl: "https://console.groq.com/keys",
+        modelHint: "Chat: llama-3.3-70b · Vision: llama-4-scout · STT: whisper-large-v3-turbo",
+        keyField: "groq",
+      },
+      openai: {
+        label: "OpenAI API Key",
+        placeholder: "sk-...",
+        linkText: "platform.openai.com",
+        linkUrl: "https://platform.openai.com/api-keys",
+        modelHint: "Chat: gpt-4o · Vision: gpt-4o · STT: whisper-1",
+        keyField: "openai",
+      },
+      claude: {
+        label: "Anthropic API Key",
+        placeholder: "sk-ant-...",
+        linkText: "console.anthropic.com",
+        linkUrl: "https://console.anthropic.com/settings/keys",
+        modelHint: "Chat: claude-sonnet-4 · Vision: claude-sonnet-4 · STT: groq whisper",
+        keyField: "anthropic",
+      },
+    };
 
     // ─── DOM refs ───────────────────────────
     const statusDot = document.getElementById("status-dot");
@@ -178,11 +236,19 @@
     const settingsScreen = document.getElementById("settings-screen");
     const contentEl = document.getElementById("content");
     const apiKeyInput = document.getElementById("api-key-input");
+    const apiKeyLabel = document.getElementById("api-key-label");
+    const apiKeyHint = document.getElementById("api-key-hint");
+    const apiKeyLink = document.getElementById("api-key-link");
     const btnSaveKey = document.getElementById("btn-save-key");
     const btnSettingsClose = document.getElementById("btn-settings-close");
     const btnToggleKeyVis = document.getElementById("btn-toggle-key-vis");
     const keyStatus = document.getElementById("key-status");
-    const groqLink = document.getElementById("groq-link");
+    const providerSelect = document.getElementById("provider-select");
+    const providerModelHint = document.getElementById("provider-model-hint");
+    const claudeSttSection = document.getElementById("claude-stt-section");
+    const groqSttInput = document.getElementById("groq-stt-key-input");
+    const btnToggleGroqSttVis = document.getElementById("btn-toggle-groq-stt-vis");
+    const groqSttLink = document.getElementById("groq-stt-link");
     const userContextInput = document.getElementById("user-context-input");
     const btnSaveContext = document.getElementById("btn-save-context");
     const contextStatus = document.getElementById("context-status");
@@ -227,6 +293,11 @@
 
         case "status":
           showStatus(msg.text);
+          break;
+
+        case "provider":
+          // Backend confirmed which provider is active
+          currentProvider = msg.name;
           break;
 
         case "screenshot_start":
@@ -445,11 +516,63 @@
       licensePlanBadge.className = "plan-badge " + plan;
     }
 
+    // ─── Provider Selection ─────────────────
+    function updateProviderUI(provider) {
+      const config = PROVIDER_CONFIG[provider];
+      if (!config) return;
+
+      // Update key label, placeholder, link
+      apiKeyLabel.textContent = config.label;
+      apiKeyInput.placeholder = config.placeholder;
+      apiKeyLink.textContent = config.linkText;
+      providerModelHint.textContent = config.modelHint;
+
+      // Show/hide Claude transcription section
+      claudeSttSection.style.display = provider === "claude" ? "block" : "none";
+    }
+
+    providerSelect.addEventListener("change", () => {
+      const selected = providerSelect.value;
+      updateProviderUI(selected);
+    });
+
+    providerSelect.addEventListener("focus", () => {
+      window.copilot.setFocusable(true);
+    });
+    providerSelect.addEventListener("blur", () => {
+      window.copilot.setFocusable(false);
+    });
+
+    // API key link click handler
+    apiKeyLink.addEventListener("click", () => {
+      const config = PROVIDER_CONFIG[providerSelect.value];
+      if (config) window.copilot.openExternal(config.linkUrl);
+    });
+
+    groqSttLink.addEventListener("click", () => {
+      window.copilot.openExternal("https://console.groq.com/keys");
+    });
+
+    btnToggleGroqSttVis.addEventListener("click", () => {
+      groqSttInput.type = groqSttInput.type === "password" ? "text" : "password";
+    });
+
+    groqSttInput.addEventListener("focus", () => {
+      window.copilot.setFocusable(true);
+    });
+    groqSttInput.addEventListener("blur", () => {
+      window.copilot.setFocusable(false);
+    });
+    groqSttInput.addEventListener("keydown", (e) => {
+      e.stopPropagation();
+    });
+
     // ─── Settings ───────────────────────────
-    function showSettings() {
+    async function showSettings() {
       settingsScreen.style.display = "flex";
       contentEl.style.display = "none";
       window.copilot.setFocusable(true);
+
       // Load saved license key
       window.copilot.getLicenseKey().then(key => {
         if (key) licenseKeyInput.value = key;
@@ -457,10 +580,26 @@
       window.copilot.getLicenseStatus().then(status => {
         if (status && status.plan) updatePlanBadge(status.plan);
       });
-      // Load saved api key
-      window.copilot.getApiKey().then(key => {
-        if (key) apiKeyInput.value = key;
-      });
+
+      // Load provider
+      const provider = await window.copilot.getProvider();
+      providerSelect.value = provider || "groq";
+      updateProviderUI(providerSelect.value);
+
+      // Load saved API keys
+      const keys = await window.copilot.getApiKeys();
+      const config = PROVIDER_CONFIG[providerSelect.value];
+      if (config && keys[config.keyField]) {
+        apiKeyInput.value = keys[config.keyField];
+      } else {
+        apiKeyInput.value = "";
+      }
+
+      // Load Groq STT key for Claude
+      if (keys.groq) {
+        groqSttInput.value = keys.groq;
+      }
+
       // Load saved context
       window.copilot.getUserContext().then(ctx => {
         if (ctx) userContextInput.value = ctx;
@@ -481,24 +620,54 @@
       apiKeyInput.type = apiKeyInput.type === "password" ? "text" : "password";
     });
 
-    groqLink.addEventListener("click", () => {
-      window.copilot.openExternal("https://console.groq.com/keys");
+    // Update key input value when provider changes
+    providerSelect.addEventListener("change", async () => {
+      const keys = await window.copilot.getApiKeys();
+      const config = PROVIDER_CONFIG[providerSelect.value];
+      if (config && keys[config.keyField]) {
+        apiKeyInput.value = keys[config.keyField];
+      } else {
+        apiKeyInput.value = "";
+      }
     });
 
     btnSaveKey.addEventListener("click", async () => {
+      const provider = providerSelect.value;
       const key = apiKeyInput.value.trim();
       if (!key) {
         keyStatus.textContent = "Please enter a key";
         keyStatus.className = "key-status error";
         return;
       }
+
+      // Build keys object
+      const config = PROVIDER_CONFIG[provider];
+      const keysToSave = {};
+      keysToSave[config.keyField] = key;
+
+      // If Claude, also save Groq key for transcription
+      if (provider === "claude") {
+        const groqKey = groqSttInput.value.trim();
+        if (groqKey) {
+          keysToSave.groq = groqKey;
+        }
+      }
+
       keyStatus.textContent = "Saving...";
       keyStatus.className = "key-status";
       try {
-        await window.copilot.saveApiKey(key);
-        keyStatus.textContent = "Saved! Restarting backend...";
-        keyStatus.className = "key-status success";
-        setTimeout(hideSettings, 1500);
+        const result = await window.copilot.saveProviderSettings({
+          provider: provider,
+          keys: keysToSave,
+        });
+        if (result.success) {
+          keyStatus.textContent = `Saved! Restarting backend (${provider})...`;
+          keyStatus.className = "key-status success";
+          setTimeout(hideSettings, 1500);
+        } else {
+          keyStatus.textContent = result.error || "Failed to save";
+          keyStatus.className = "key-status error";
+        }
       } catch (e) {
         keyStatus.textContent = "Failed to save";
         keyStatus.className = "key-status error";
@@ -548,9 +717,12 @@
     // On load, check if license key and api key exist — if not, show settings
     Promise.all([
       window.copilot.getLicenseKey(),
-      window.copilot.getApiKey()
-    ]).then(([licenseKey, apiKey]) => {
-      if (!licenseKey || !apiKey) showSettings();
+      window.copilot.getApiKeys(),
+      window.copilot.getProvider(),
+    ]).then(([licenseKey, keys, provider]) => {
+      const config = PROVIDER_CONFIG[provider || "groq"];
+      const hasKey = config && keys[config.keyField];
+      if (!licenseKey || !hasKey) showSettings();
     });
   </script>
 </body>

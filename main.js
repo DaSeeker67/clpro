@@ -10,6 +10,8 @@
  *
  * Spawns the Python backend as a child process and bridges
  * JSON-line IPC between Python and the renderer.
+ *
+ * Supports multiple AI providers: Groq, OpenAI, Claude (Anthropic).
  */
 
 const {
@@ -28,7 +30,7 @@ const os = require("os");
 const { shell } = require("electron");
 const crypto = require("crypto");
 
-// ─── API Key Storage ──────────────────────────────
+// ─── Config Directory ─────────────────────────
 
 function getConfigDir() {
   const dir = path.join(app.getPath("userData"), "config");
@@ -36,30 +38,86 @@ function getConfigDir() {
   return dir;
 }
 
-function getStoredApiKey() {
+// ─── Provider Storage ─────────────────────────
+
+function getStoredProvider() {
   try {
-    const file = path.join(getConfigDir(), "api-key.json");
+    const file = path.join(getConfigDir(), "provider.json");
     if (fs.existsSync(file)) {
       const data = JSON.parse(fs.readFileSync(file, "utf-8"));
-      return data.groq_api_key || "";
+      return data.provider || "groq";
     }
   } catch (e) {
-    console.error("[electron] Failed to read API key:", e.message);
+    console.error("[electron] Failed to read provider:", e.message);
   }
+  return "groq";
+}
+
+function saveProvider(name) {
+  const file = path.join(getConfigDir(), "provider.json");
+  fs.writeFileSync(file, JSON.stringify({ provider: name }), "utf-8");
+  console.log(`[electron] Provider saved: ${name}`);
+}
+
+// ─── API Key Storage (Multi-Provider) ─────────
+
+function getStoredApiKeys() {
+  const keys = { groq: "", openai: "", anthropic: "" };
+  try {
+    const file = path.join(getConfigDir(), "api-keys.json");
+    if (fs.existsSync(file)) {
+      const data = JSON.parse(fs.readFileSync(file, "utf-8"));
+      keys.groq = data.groq || "";
+      keys.openai = data.openai || "";
+      keys.anthropic = data.anthropic || "";
+    }
+  } catch (e) {
+    console.error("[electron] Failed to read API keys:", e.message);
+  }
+
+  // Backward compat: check old single-key file
+  if (!keys.groq) {
+    try {
+      const oldFile = path.join(getConfigDir(), "api-key.json");
+      if (fs.existsSync(oldFile)) {
+        const data = JSON.parse(fs.readFileSync(oldFile, "utf-8"));
+        if (data.groq_api_key) keys.groq = data.groq_api_key;
+      }
+    } catch (e) { /* ignore */ }
+  }
+
   // Fallback: check .env
-  const envPath = path.join(__dirname, ".env");
-  if (fs.existsSync(envPath)) {
-    const content = fs.readFileSync(envPath, "utf-8");
-    const match = content.match(/GROQ_API_KEY=(.+)/);
-    if (match) return match[1].trim();
+  if (!keys.groq) {
+    const envPath = path.join(__dirname, ".env");
+    if (fs.existsSync(envPath)) {
+      const content = fs.readFileSync(envPath, "utf-8");
+      const match = content.match(/GROQ_API_KEY=(.+)/);
+      if (match) keys.groq = match[1].trim();
+    }
   }
-  return "";
+
+  return keys;
+}
+
+function saveApiKeys(keys) {
+  const file = path.join(getConfigDir(), "api-keys.json");
+  const existing = getStoredApiKeys();
+  const merged = {
+    groq: keys.groq !== undefined ? keys.groq : existing.groq,
+    openai: keys.openai !== undefined ? keys.openai : existing.openai,
+    anthropic: keys.anthropic !== undefined ? keys.anthropic : existing.anthropic,
+  };
+  fs.writeFileSync(file, JSON.stringify(merged), "utf-8");
+  console.log("[electron] API keys saved");
+}
+
+// Backward-compatible single-key accessors (used by legacy code)
+function getStoredApiKey() {
+  return getStoredApiKeys().groq;
 }
 
 function saveApiKey(key) {
-  const file = path.join(getConfigDir(), "api-key.json");
-  fs.writeFileSync(file, JSON.stringify({ groq_api_key: key }), "utf-8");
-  console.log("[electron] API key saved");
+  saveApiKeys({ groq: key });
 }
 
 function getStoredUserContext() {
@@ -250,11 +308,28 @@ function startPythonBackend() {
     cwd = __dirname;
   }
 
-  // Pass API key and user context as env vars so Python can use them
-  const apiKey = getStoredApiKey();
+  // Pass API keys, provider, and user context as env vars so Python can use them
+  const apiKeys = getStoredApiKeys();
+  const provider = getStoredProvider();
   const userContext = getStoredUserContext();
   const env = { ...process.env, PYTHONIOENCODING: "utf-8" };
-  if (apiKey) env.GROQ_API_KEY = apiKey;
+
+  // Provider selection
+  env.CLUELY_PROVIDER = provider;
+
+  // API keys for all providers
+  if (apiKeys.groq) env.GROQ_API_KEY = apiKeys.groq;
+  if (apiKeys.openai) env.OPENAI_API_KEY = apiKeys.openai;
+  if (apiKeys.anthropic) env.ANTHROPIC_API_KEY = apiKeys.anthropic;
+
+  // Groq fallback key (from .env legacy)
+  const envPath = path.join(__dirname, ".env");
+  if (fs.existsSync(envPath)) {
+    const content = fs.readFileSync(envPath, "utf-8");
+    const match = content.match(/GROQ_API_fallback=(.+)/);
+    if (match) env.GROQ_API_fallback = match[1].trim();
+  }
+
   if (userContext) env.CLUELY_USER_CONTEXT = userContext;
 
   pythonProcess = spawn(cmd, args, {
@@ -272,7 +347,7 @@ function startPythonBackend() {
     }
   });
 
-  console.log(`[electron] Python backend started (PID: ${pythonProcess.pid})`);
+  console.log(`[electron] Python backend started (PID: ${pythonProcess.pid}, provider: ${provider})`);
 
   // Read JSON lines from Python's stdout
   const rl = readline.createInterface({
@@ -545,6 +620,27 @@ ipcMain.on("set-focusable", (event, focusable) => {
   }
 });
 
+// ─── Provider & Keys IPC ─────────────────────────
+
+ipcMain.handle("get-provider", () => {
+  return getStoredProvider();
+});
+
+ipcMain.handle("save-provider", (event, name) => {
+  saveProvider(name);
+  return true;
+});
+
+ipcMain.handle("get-api-keys", () => {
+  return getStoredApiKeys();
+});
+
+ipcMain.handle("save-api-keys", (event, keys) => {
+  saveApiKeys(keys);
+  return true;
+});
+
+// Backward-compatible single-key handlers
 ipcMain.handle("get-api-key", () => {
   return getStoredApiKey();
 });
@@ -578,6 +674,29 @@ ipcMain.handle("save-api-key", async (event, key) => {
   return true;
 });
 
+// Save all provider settings and restart backend
+ipcMain.handle("save-provider-settings", async (event, { provider, keys }) => {
+  saveProvider(provider);
+  saveApiKeys(keys);
+
+  const licenseValid = licenseState.valid || await validateLicense();
+  if (!licenseValid) return { success: false, error: "License not valid" };
+
+  // Restart python backend with new provider
+  if (pythonProcess) {
+    sendToPython("quit");
+    await new Promise((resolve) => {
+      setTimeout(() => {
+        if (pythonProcess) pythonProcess.kill();
+        pythonProcess = null;
+        resolve();
+      }, 1000);
+    });
+  }
+  startPythonBackend();
+  return { success: true };
+});
+
 ipcMain.on("open-external", (event, url) => {
   shell.openExternal(url);
 });
@@ -589,8 +708,14 @@ ipcMain.handle("get-license-key", () => {
 ipcMain.handle("save-license-key", async (event, key) => {
   saveLicenseKeyToFile(key);
   const valid = await validateLicense();
-  if (valid && !pythonProcess && getStoredApiKey()) {
-    startPythonBackend();
+  if (valid && !pythonProcess) {
+    // Check if we have an API key for the selected provider
+    const provider = getStoredProvider();
+    const keys = getStoredApiKeys();
+    const hasKey = (provider === "groq" && keys.groq) ||
+                   (provider === "openai" && keys.openai) ||
+                   (provider === "claude" && keys.anthropic);
+    if (hasKey) startPythonBackend();
   }
   return { valid, ...licenseState };
 });
@@ -605,7 +730,13 @@ app.whenReady().then(async () => {
   createWindow();
 
   const licenseValid = await validateLicense();
-  const hasApiKey = !!getStoredApiKey();
+  const provider = getStoredProvider();
+  const keys = getStoredApiKeys();
+
+  // Check if user has API key for the selected provider
+  const hasApiKey = (provider === "groq" && !!keys.groq) ||
+                    (provider === "openai" && !!keys.openai) ||
+                    (provider === "claude" && !!keys.anthropic);
 
   if (licenseValid && hasApiKey) {
     startPythonBackend();

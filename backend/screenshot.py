@@ -1,7 +1,7 @@
 """
-screenshot.py -- Screen capture + vision AI analysis.
+screenshot.py -- Screen capture + vision AI analysis (provider-agnostic).
 
-Takes a screenshot, sends it to Groq's vision model (LLaMA 3.2 Vision),
+Takes a screenshot, sends it to the configured AI provider's vision model,
 and returns an AI-generated answer about what's on screen.
 """
 
@@ -9,12 +9,9 @@ import sys
 import os
 import time
 import base64
-import tempfile
 
-from groq import Groq, RateLimitError
+from provider import BaseProvider
 
-
-VISION_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 
 SYSTEM_PROMPT = """You are an expert problem-solving assistant embedded in a screen overlay. When the user captures their screen, your job is to SOLVE, ANSWER, or FIX whatever is visible -- NOT to describe or extract what you see.
 
@@ -38,14 +35,13 @@ USER_PROMPT = "Analyze this screenshot. DO NOT describe or extract text. SOLVE e
 
 
 class ScreenshotAnalyzer:
-    """Captures and analyzes screenshots using Groq Vision API."""
+    """Captures and analyzes screenshots using the configured AI provider's vision API."""
 
-    def __init__(self, api_key: str = None, fallback_key: str = None):
-        self.client = Groq(api_key=api_key)
-        self.fallback_client = Groq(api_key=fallback_key) if fallback_key else None
+    def __init__(self, provider: BaseProvider):
+        self.provider = provider
         self._total_calls = 0
         self._total_latency = 0.0
-        print("[screenshot] Initialized with Groq Vision", file=sys.stderr)
+        print(f"[screenshot] Initialized with {provider.name} provider", file=sys.stderr)
 
     def analyze_screenshot(self, image_path: str, custom_prompt: str = None):
         """
@@ -59,8 +55,6 @@ class ScreenshotAnalyzer:
             dict with: type ("chunk" or "done" or "error"), text, latency_ms
         """
         start = time.time()
-        first_token = True
-        full_text = []
 
         try:
             # Read and base64 encode the image
@@ -74,63 +68,34 @@ class ScreenshotAnalyzer:
 
             user_text = custom_prompt or USER_PROMPT
 
-            api_args = dict(
-                model=VISION_MODEL,
-                messages=[
-                    {
-                        "role": "system",
-                        "content": SYSTEM_PROMPT,
-                    },
-                    {
-                        "role": "user",
-                        "content": [
-                            {"type": "text", "text": user_text},
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:{mime_type};base64,{image_data}",
-                                },
+            # Build messages in OpenAI-compatible format
+            # (provider.py handles conversion for Claude)
+            messages = [
+                {
+                    "role": "system",
+                    "content": SYSTEM_PROMPT,
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": user_text},
+                        {
+                            "type": "image_url",
+                            "image_url": {
+                                "url": f"data:{mime_type};base64,{image_data}",
                             },
-                        ],
-                    }
-                ],
-                temperature=0.3,
-                max_tokens=1024,
-                stream=True,
-            )
-            try:
-                stream = self.client.chat.completions.create(**api_args)
-            except RateLimitError:
-                if not self.fallback_client:
-                    raise
-                print("[screenshot] Primary key rate-limited, switching to fallback", file=sys.stderr)
-                stream = self.fallback_client.chat.completions.create(**api_args)
+                        },
+                    ],
+                }
+            ]
 
-            for chunk in stream:
-                if chunk.choices[0].delta.content:
-                    text = chunk.choices[0].delta.content
-                    full_text.append(text)
-                    latency_ms = (time.time() - start) * 1000
-
-                    if first_token:
-                        print(f"[screenshot] First token: {latency_ms:.0f}ms", file=sys.stderr)
-                        first_token = False
-
-                    yield {
-                        "type": "chunk",
-                        "text": text,
-                        "latency_ms": latency_ms,
-                    }
-
-            total_latency = (time.time() - start) * 1000
-            self._total_calls += 1
-            self._total_latency += total_latency
-
-            yield {
-                "type": "done",
-                "text": "".join(full_text),
-                "latency_ms": total_latency,
-            }
+            for chunk in self.provider.vision_complete(
+                messages, temperature=0.3, max_tokens=1024, stream=True
+            ):
+                if chunk["type"] == "done":
+                    self._total_calls += 1
+                    self._total_latency += chunk["latency_ms"]
+                yield chunk
 
         except Exception as e:
             latency_ms = (time.time() - start) * 1000

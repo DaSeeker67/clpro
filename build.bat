@@ -26,6 +26,8 @@ python -m PyInstaller --noconfirm --clean --distpath ../python-dist --name cluel
     --hidden-import=pynput.keyboard._win32 ^
     --hidden-import=pynput.mouse ^
     --hidden-import=pynput.mouse._win32 ^
+    --hidden-import=openai ^
+    --hidden-import=anthropic ^
     --collect-all sounddevice ^
     --collect-all soundfile ^
     --collect-all numpy

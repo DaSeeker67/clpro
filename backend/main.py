@@ -1,9 +1,11 @@
 """
 main.py — Backend orchestrator for Cluely Pro.
 
-Wires the full pipeline: audio capture -> VAD chunker -> Whisper STT ->
-context manager -> LLaMA assistant. Runs in the terminal for Phase 1,
+Wires the full pipeline: audio capture -> VAD chunker -> STT ->
+context manager -> AI assistant. Runs in the terminal for Phase 1,
 or as a child process for Electron (Phase 2).
+
+Supports multiple AI providers: Groq, OpenAI, Claude (Anthropic).
 
 Usage:
     python main.py              # interactive terminal mode
@@ -34,6 +36,7 @@ from transcriber import Transcriber
 from context_manager import ContextManager
 from assistant import Assistant
 from screenshot import ScreenshotAnalyzer
+from provider import create_provider
 
 # Load .env from project root (or next to exe when packaged)
 if getattr(sys, 'frozen', False):
@@ -91,6 +94,61 @@ def emit_ipc(msg_type: str, **kwargs):
 
 
 # ──────────────────────────────────────────────
+# Provider Initialization
+# ──────────────────────────────────────────────
+def init_provider():
+    """
+    Initialize the AI provider based on environment variables.
+
+    Reads:
+        CLUELY_PROVIDER   — "groq" (default), "openai", or "claude"
+        GROQ_API_KEY      — Groq API key
+        GROQ_API_fallback — Groq fallback key (rate-limit mitigation)
+        OPENAI_API_KEY    — OpenAI API key
+        ANTHROPIC_API_KEY — Anthropic (Claude) API key
+
+    Returns:
+        (provider_instance, provider_name) or (None, provider_name)
+    """
+    provider_name = os.getenv("CLUELY_PROVIDER", "groq").lower().strip()
+    groq_key = os.getenv("GROQ_API_KEY", "")
+    groq_fallback = os.getenv("GROQ_API_fallback", "")
+    openai_key = os.getenv("OPENAI_API_KEY", "")
+    anthropic_key = os.getenv("ANTHROPIC_API_KEY", "")
+
+    # Determine which key to use based on provider
+    if provider_name == "groq":
+        api_key = groq_key
+        if not api_key or api_key == "your_key_here":
+            return None, provider_name
+        return create_provider("groq", api_key=api_key, fallback_key=groq_fallback or None), provider_name
+
+    elif provider_name == "openai":
+        api_key = openai_key
+        if not api_key or api_key == "your_key_here":
+            return None, provider_name
+        return create_provider("openai", api_key=api_key), provider_name
+
+    elif provider_name == "claude":
+        api_key = anthropic_key
+        if not api_key or api_key == "your_key_here":
+            return None, provider_name
+        return create_provider(
+            "claude",
+            api_key=api_key,
+            groq_key=groq_key if groq_key and groq_key != "your_key_here" else None,
+            groq_fallback_key=groq_fallback or None,
+        ), provider_name
+
+    else:
+        print(f"[pipeline] Unknown provider '{provider_name}', defaulting to groq", file=sys.stderr)
+        api_key = groq_key
+        if not api_key or api_key == "your_key_here":
+            return None, "groq"
+        return create_provider("groq", api_key=api_key, fallback_key=groq_fallback or None), "groq"
+
+
+# ──────────────────────────────────────────────
 # Main pipeline
 # ──────────────────────────────────────────────
 class CopilotPipeline:
@@ -114,10 +172,10 @@ class CopilotPipeline:
         self._listening = True
         self._threads = []
 
-        # Components
-        api_key = os.getenv("GROQ_API_KEY")
-        if not api_key or api_key == "your_key_here":
-            msg = "No API key set. Please add your Groq API key in Settings."
+        # Initialize provider
+        provider, provider_name = init_provider()
+        if not provider:
+            msg = f"No API key set for {provider_name}. Please add your API key in Settings."
             print(f"ERROR: {msg}", file=sys.stderr)
             if self.ipc_mode:
                 emit_ipc("answer_error", text=msg)
@@ -125,8 +183,9 @@ class CopilotPipeline:
                 return
             else:
                 sys.exit(1)
-        fallback_key = os.getenv("GROQ_API_fallback")
-        user_context = os.getenv("CLUELY_USER_CONTEXT", "")
+
+        self.provider = provider
+        self.provider_name = provider_name
 
         # Dual audio capture: loopback (speaker) + microphone
         self.capture_loopback = AudioCapture(self.audio_queue_loopback, mode="loopback")
@@ -134,10 +193,11 @@ class CopilotPipeline:
         self.chunker_loopback = AudioChunker(self.audio_queue_loopback, self.chunk_queue)
         # self.chunker_mic = AudioChunker(self.audio_queue_mic, self.chunk_queue)
 
-        self.transcriber = Transcriber(api_key=api_key, fallback_key=fallback_key)
+        self.transcriber = Transcriber(provider=provider)
         self.context = ContextManager()
-        self.assistant = Assistant(api_key=api_key, fallback_key=fallback_key, user_context=user_context)
-        self.screenshotter = ScreenshotAnalyzer(api_key=api_key, fallback_key=fallback_key)
+        user_context = os.getenv("CLUELY_USER_CONTEXT", "")
+        self.assistant = Assistant(provider=provider, user_context=user_context)
+        self.screenshotter = ScreenshotAnalyzer(provider=provider)
 
         self._initialized = True
 
@@ -154,9 +214,10 @@ class CopilotPipeline:
             return
 
         if self.ipc_mode:
-            emit_ipc("status", text="Starting pipeline...")
+            emit_ipc("status", text=f"Starting pipeline ({self.provider_name})...")
+            emit_ipc("provider", name=self.provider_name)
         else:
-            print_status("Starting Cluely Pro...")
+            print_status(f"Starting Cluely Pro ({self.provider_name})...")
             print_status("Press Ctrl+Shift+H to toggle listening")
             print_status("Press Ctrl+Shift+A to force-answer on last 10s")
             print_status("Press Ctrl+C to exit")
@@ -221,6 +282,14 @@ class CopilotPipeline:
             # Transcribe
             result = self.transcriber.transcribe(chunk_path)
             self.transcriber.cleanup_chunk(chunk_path)
+
+            # Surface quota errors to the UI (once, not per chunk)
+            if result.get("quota_error"):
+                if self.ipc_mode:
+                    emit_ipc("answer_error", text=result["quota_error"])
+                else:
+                    print_colored("ERROR", Colors.RED, result["quota_error"])
+                continue
 
             if not result["success"] or not result["text"]:
                 continue

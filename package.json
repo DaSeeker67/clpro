@@ -1,12 +1,12 @@
 {
   "name": "cluely-pro",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Stealth meeting copilot — local, screen-capture-proof AI assistant",
   "main": "main.js",
   "scripts": {
     "start": "electron .",
     "dev": "electron . --dev",
-    "build:python": "cd backend && pyinstaller --noconfirm --clean --distpath ../python-dist --name cluely-backend main.py --hidden-import=dotenv --hidden-import=pynput --hidden-import=pynput.keyboard --hidden-import=pynput.keyboard._win32 --hidden-import=pynput.mouse --hidden-import=pynput.mouse._win32 --collect-all sounddevice --collect-all soundfile",
+    "build:python": "cd backend && pyinstaller --noconfirm --clean --distpath ../python-dist --name cluely-backend main.py --hidden-import=dotenv --hidden-import=pynput --hidden-import=pynput.keyboard --hidden-import=pynput.keyboard._win32 --hidden-import=pynput.mouse --hidden-import=pynput.mouse._win32 --hidden-import=openai --hidden-import=anthropic --collect-all sounddevice --collect-all soundfile",
     "build:electron": "electron-builder --win",
     "build": "npm run build:python && npm run build:electron"
   },
