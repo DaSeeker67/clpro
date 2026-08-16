@@ -140,6 +140,18 @@ def init_provider():
             groq_fallback_key=groq_fallback or None,
         ), provider_name
 
+    elif provider_name == "gemini":
+        gemini_key = os.getenv("GEMINI_API_KEY", "")
+        api_key = gemini_key
+        if not api_key or api_key == "your_key_here":
+            return None, provider_name
+        return create_provider(
+            "gemini",
+            api_key=api_key,
+            groq_key=groq_key if groq_key and groq_key != "your_key_here" else None,
+            groq_fallback_key=groq_fallback or None,
+        ), provider_name
+
     else:
         print(f"[pipeline] Unknown provider '{provider_name}', defaulting to groq", file=sys.stderr)
         api_key = groq_key

@@ -62,7 +62,7 @@ function saveProvider(name) {
 // ─── API Key Storage (Multi-Provider) ─────────
 
 function getStoredApiKeys() {
-  const keys = { groq: "", openai: "", anthropic: "" };
+  const keys = { groq: "", openai: "", anthropic: "", gemini: "" };
   try {
     const file = path.join(getConfigDir(), "api-keys.json");
     if (fs.existsSync(file)) {
@@ -70,6 +70,7 @@ function getStoredApiKeys() {
       keys.groq = data.groq || "";
       keys.openai = data.openai || "";
       keys.anthropic = data.anthropic || "";
+      keys.gemini = data.gemini || "";
     }
   } catch (e) {
     console.error("[electron] Failed to read API keys:", e.message);
@@ -106,6 +107,7 @@ function saveApiKeys(keys) {
     groq: keys.groq !== undefined ? keys.groq : existing.groq,
     openai: keys.openai !== undefined ? keys.openai : existing.openai,
     anthropic: keys.anthropic !== undefined ? keys.anthropic : existing.anthropic,
+    gemini: keys.gemini !== undefined ? keys.gemini : existing.gemini,
   };
   fs.writeFileSync(file, JSON.stringify(merged), "utf-8");
   console.log("[electron] API keys saved");
@@ -321,6 +323,7 @@ function startPythonBackend() {
   if (apiKeys.groq) env.GROQ_API_KEY = apiKeys.groq;
   if (apiKeys.openai) env.OPENAI_API_KEY = apiKeys.openai;
   if (apiKeys.anthropic) env.ANTHROPIC_API_KEY = apiKeys.anthropic;
+  if (apiKeys.gemini) env.GEMINI_API_KEY = apiKeys.gemini;
 
   // Groq fallback key (from .env legacy)
   const envPath = path.join(__dirname, ".env");
@@ -397,6 +400,14 @@ function sendToPython(command, data = {}) {
     } catch (e) {
       // EPIPE — Python process already closed its stdin (e.g. during shutdown)
       console.warn(`[electron] sendToPython EPIPE (${command}): process already closed`);
+    }
+  } else {
+    // Notify frontend that backend is not running
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("python-message", {
+        type: "answer_error",
+        text: "AI Backend is not running. Please check your License Key and API Key in Settings.",
+      });
     }
   }
 }
@@ -680,7 +691,9 @@ ipcMain.handle("save-provider-settings", async (event, { provider, keys }) => {
   saveApiKeys(keys);
 
   const licenseValid = licenseState.valid || await validateLicense();
-  if (!licenseValid) return { success: false, error: "License not valid" };
+  if (!licenseValid) {
+    return { success: true };
+  }
 
   // Restart python backend with new provider
   if (pythonProcess) {
@@ -714,15 +727,45 @@ ipcMain.handle("save-license-key", async (event, key) => {
     const keys = getStoredApiKeys();
     const hasKey = (provider === "groq" && keys.groq) ||
                    (provider === "openai" && keys.openai) ||
-                   (provider === "claude" && keys.anthropic);
+                   (provider === "claude" && keys.anthropic) ||
+                   (provider === "gemini" && keys.gemini);
     if (hasKey) startPythonBackend();
   }
+  // Re-evaluate audio limit when plan changes (upgrade clears timer)
+  startAudioLimitTimer();
   return { valid, ...licenseState };
 });
 
 ipcMain.handle("get-license-status", () => {
   return { ...licenseState };
 });
+
+// ─── Free Plan: 1-Hour Audio Session Limit ───────
+
+let audioLimitTimer = null;
+const FREE_AUDIO_LIMIT_MS = 60 * 60 * 1000; // 1 hour
+
+function startAudioLimitTimer() {
+  if (audioLimitTimer) { clearTimeout(audioLimitTimer); audioLimitTimer = null; }
+
+  if (licenseState.plan !== "free") {
+    console.log(`[electron] Audio limit: none (plan=${licenseState.plan || "unknown"})`);
+    return;
+  }
+
+  console.log("[electron] Free plan — audio will auto-pause after 1 hour");
+  audioLimitTimer = setTimeout(() => {
+    console.log("[electron] Free plan 1-hour audio limit reached");
+    sendToPython("toggle"); // flip listening off
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send("python-message", {
+        type: "answer_done",
+        text: "⏱ **Free plan limit reached** — 1 hour of audio listening used.\n\nUpgrade to **Pro** for unlimited sessions at [cluelypro.com](https://cluelypro.com).",
+        latency_ms: 0,
+      });
+    }
+  }, FREE_AUDIO_LIMIT_MS);
+}
 
 // ─── App Lifecycle ───────────────────────────────
 
@@ -736,10 +779,12 @@ app.whenReady().then(async () => {
   // Check if user has API key for the selected provider
   const hasApiKey = (provider === "groq" && !!keys.groq) ||
                     (provider === "openai" && !!keys.openai) ||
-                    (provider === "claude" && !!keys.anthropic);
+                    (provider === "claude" && !!keys.anthropic) ||
+                    (provider === "gemini" && !!keys.gemini);
 
   if (licenseValid && hasApiKey) {
     startPythonBackend();
+    startAudioLimitTimer(); // start 1-hour free-plan counter
   } else {
     console.log("[electron] Waiting for license key and/or API key...");
   }
@@ -768,6 +813,7 @@ app.whenReady().then(async () => {
 
 app.on("will-quit", () => {
   globalShortcut.unregisterAll();
+  if (audioLimitTimer) { clearTimeout(audioLimitTimer); audioLimitTimer = null; }
   if (pythonProcess) {
     sendToPython("quit");
     setTimeout(() => {

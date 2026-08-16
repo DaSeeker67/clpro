@@ -41,6 +41,7 @@ def friendly_quota_message(provider_name: str) -> str:
         "groq": "console.groq.com",
         "openai": "platform.openai.com/settings/organization/billing",
         "claude": "console.anthropic.com/settings/plans",
+        "gemini": "aistudio.google.com",
     }
     link = links.get(provider_name, "your provider dashboard")
     return f"[!] {provider_name.upper()} API quota exceeded. Check your plan & billing at {link}"
@@ -52,7 +53,7 @@ def friendly_quota_message(provider_name: str) -> str:
 PROVIDER_DEFAULTS = {
     "groq": {
         "chat_model": "llama-3.3-70b-versatile",
-        "vision_model": "meta-llama/llama-4-scout-17b-16e-instruct",
+        "vision_model": "qwen/qwen3.6-27b",
         "stt_model": "whisper-large-v3-turbo",
     },
     "openai": {
@@ -63,6 +64,11 @@ PROVIDER_DEFAULTS = {
     "claude": {
         "chat_model": "claude-sonnet-4-20250514",
         "vision_model": "claude-sonnet-4-20250514",
+        "stt_model": None,  # Falls back to Groq Whisper
+    },
+    "gemini": {
+        "chat_model": "gemini-3.7-flash",
+        "vision_model": "gemini-3.7-flash",
         "stt_model": None,  # Falls back to Groq Whisper
     },
 }
@@ -242,8 +248,8 @@ class OpenAIProvider(BaseProvider):
         super().__init__(api_key, fallback_key)
         from openai import OpenAI
         self.client = OpenAI(api_key=api_key)
-        self.defaults = PROVIDER_DEFAULTS["openai"]
-        print("[provider] Initialized OpenAIProvider", file=sys.stderr)
+        self.defaults = PROVIDER_DEFAULTS[self.name]
+        print(f"[provider] Initialized {self.__class__.__name__}", file=sys.stderr)
 
     def chat_complete(self, messages, temperature=0.3, max_tokens=1200, stream=True):
         return self._complete(messages, self.defaults["chat_model"],
@@ -284,7 +290,7 @@ class OpenAIProvider(BaseProvider):
                         full_text.append(text)
                         latency_ms = (time.time() - start) * 1000
                         if first_token:
-                            print(f"[provider:openai] First token: {latency_ms:.0f}ms", file=sys.stderr)
+                            print(f"[provider:{self.name}] First token: {latency_ms:.0f}ms", file=sys.stderr)
                             first_token = False
                         yield {"type": "chunk", "text": text, "latency_ms": latency_ms}
 
@@ -293,8 +299,8 @@ class OpenAIProvider(BaseProvider):
 
             except Exception as e:
                 latency_ms = (time.time() - start) * 1000
-                print(f"[provider:openai] Stream error: {e}", file=sys.stderr)
-                msg = friendly_quota_message("openai") if is_quota_error(e) else f"Error: {e}"
+                print(f"[provider:{self.name}] Stream error: {e}", file=sys.stderr)
+                msg = friendly_quota_message(self.name) if is_quota_error(e) else f"Error: {e}"
                 yield {"type": "error", "text": msg, "latency_ms": latency_ms}
 
         return _stream()
@@ -310,9 +316,9 @@ class OpenAIProvider(BaseProvider):
                 )
             return resp.strip() if isinstance(resp, str) else resp.text.strip()
         except Exception as e:
-            print(f"[provider:openai] Transcribe error: {e}", file=sys.stderr)
+            print(f"[provider:{self.name}] Transcribe error: {e}", file=sys.stderr)
             if is_quota_error(e):
-                raise QuotaExceededError("openai", e)
+                raise QuotaExceededError(self.name, e)
             return ""
 
 
@@ -485,6 +491,71 @@ class ClaudeProvider(BaseProvider):
 
 
 # ──────────────────────────────────────────────
+# Gemini Provider (via OpenAI compat layer)
+# ──────────────────────────────────────────────
+class GeminiProvider(OpenAIProvider):
+    """Google Gemini — chat/vision via OpenAI compat endpoint, Groq for STT."""
+
+    name = "gemini"
+
+    def __init__(self, api_key: str, fallback_key: str = None,
+                 groq_key: str = None, groq_fallback_key: str = None):
+        self.api_key = api_key
+        self.fallback_key = fallback_key
+        from openai import OpenAI
+        self.client = OpenAI(
+            api_key=api_key,
+            base_url="https://generativelanguage.googleapis.com/v1beta/openai/"
+        )
+        self.defaults = PROVIDER_DEFAULTS["gemini"]
+        
+        self._groq_stt = None
+        if groq_key:
+            from groq import Groq
+            self._groq_stt = Groq(api_key=groq_key)
+            self._groq_stt_fallback = Groq(api_key=groq_fallback_key) if groq_fallback_key else None
+            
+        print("[provider] Initialized GeminiProvider", file=sys.stderr)
+
+    def transcribe(self, wav_path: str, language: str = "en") -> str:
+        """Gemini OpenAI compat doesn't support STT yet — falls back to Groq Whisper."""
+        if not self._groq_stt:
+            print("[provider:gemini] No Groq key for STT, skipping transcription", file=sys.stderr)
+            return ""
+
+        try:
+            from groq import RateLimitError
+            try:
+                with open(wav_path, "rb") as f:
+                    resp = self._groq_stt.audio.transcriptions.create(
+                        file=("audio.wav", f),
+                        model="whisper-large-v3-turbo",
+                        language=language,
+                        response_format="text",
+                    )
+            except RateLimitError:
+                if not self._groq_stt_fallback:
+                    raise
+                with open(wav_path, "rb") as f:
+                    resp = self._groq_stt_fallback.audio.transcriptions.create(
+                        file=("audio.wav", f),
+                        model="whisper-large-v3-turbo",
+                        language=language,
+                        response_format="text",
+                    )
+            return resp.strip() if isinstance(resp, str) else resp.text.strip()
+        except Exception as e:
+            print(f"[provider:gemini] STT error: {e}", file=sys.stderr)
+            if is_quota_error(e):
+                raise QuotaExceededError("gemini (groq STT)", e)
+            return ""
+
+    @property
+    def supports_transcription(self) -> bool:
+        return self._groq_stt is not None
+
+
+# ──────────────────────────────────────────────
 # Factory
 # ──────────────────────────────────────────────
 def create_provider(name: str, **kwargs) -> BaseProvider:
@@ -492,7 +563,7 @@ def create_provider(name: str, **kwargs) -> BaseProvider:
     Factory function to create the appropriate provider.
 
     Args:
-        name: "groq", "openai", or "claude"
+        name: "groq", "openai", "claude", or "gemini"
         **kwargs: Provider-specific args (api_key, fallback_key, groq_key, etc.)
 
     Returns:
@@ -516,5 +587,12 @@ def create_provider(name: str, **kwargs) -> BaseProvider:
             groq_key=kwargs.get("groq_key"),
             groq_fallback_key=kwargs.get("groq_fallback_key"),
         )
+    elif name == "gemini":
+        return GeminiProvider(
+            api_key=kwargs.get("api_key", ""),
+            fallback_key=kwargs.get("fallback_key"),
+            groq_key=kwargs.get("groq_key"),
+            groq_fallback_key=kwargs.get("groq_fallback_key"),
+        )
     else:
-        raise ValueError(f"Unknown provider: {name}. Must be 'groq', 'openai', or 'claude'.")
+        raise ValueError(f"Unknown provider: {name}. Must be 'groq', 'openai', 'claude', or 'gemini'.")

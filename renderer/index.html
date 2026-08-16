@@ -115,6 +115,7 @@
           <option value="groq">Groq — LLaMA 3.3 70B</option>
           <option value="openai">OpenAI — GPT-4o</option>
           <option value="claude">Claude — Sonnet 4</option>
+          <option value="gemini">Gemini — 3.7 Flash</option>
         </select>
       </div>
       <div id="provider-model-hint" class="provider-model-hint"></div>
@@ -200,7 +201,7 @@
         placeholder: "gsk_...",
         linkText: "console.groq.com",
         linkUrl: "https://console.groq.com/keys",
-        modelHint: "Chat: llama-3.3-70b · Vision: llama-4-scout · STT: whisper-large-v3-turbo",
+        modelHint: "Chat: llama-3.3-70b · Vision: qwen3.6-27b · STT: whisper-large-v3-turbo",
         keyField: "groq",
       },
       openai: {
@@ -218,6 +219,14 @@
         linkUrl: "https://console.anthropic.com/settings/keys",
         modelHint: "Chat: claude-sonnet-4 · Vision: claude-sonnet-4 · STT: groq whisper",
         keyField: "anthropic",
+      },
+      gemini: {
+        label: "Gemini API Key",
+        placeholder: "AIzaSy...",
+        linkText: "aistudio.google.com",
+        linkUrl: "https://aistudio.google.com/app/apikey",
+        modelHint: "Chat: gemini-3.7-flash · Vision: gemini-3.7-flash · STT: groq whisper",
+        keyField: "gemini",
       },
     };
 
@@ -527,8 +536,14 @@
       apiKeyLink.textContent = config.linkText;
       providerModelHint.textContent = config.modelHint;
 
-      // Show/hide Claude transcription section
-      claudeSttSection.style.display = provider === "claude" ? "block" : "none";
+      // Show/hide Claude/Gemini transcription section
+      claudeSttSection.style.display = (provider === "claude" || provider === "gemini") ? "block" : "none";
+      const noticeText = claudeSttSection.querySelector(".notice-text");
+      if (provider === "gemini") {
+        noticeText.textContent = "Gemini uses Groq for audio transcription here. A Groq key is needed.";
+      } else if (provider === "claude") {
+        noticeText.textContent = "Claude has no speech API. A Groq key is needed for audio transcription.";
+      }
     }
 
     providerSelect.addEventListener("change", () => {
@@ -645,8 +660,8 @@
       const keysToSave = {};
       keysToSave[config.keyField] = key;
 
-      // If Claude, also save Groq key for transcription
-      if (provider === "claude") {
+      // If Claude or Gemini, also save Groq key for transcription
+      if (provider === "claude" || provider === "gemini") {
         const groqKey = groqSttInput.value.trim();
         if (groqKey) {
           keysToSave.groq = groqKey;
